@@ -148,6 +148,10 @@ message:
 
 ## Thread commands
 
+Registered as real Discord application commands, so they appear in the picker
+with autocomplete. They are also accepted as plain text, which is what the
+daemon actually parses — registration is purely discoverability.
+
 Handled by the daemon, never by the model, so they cost nothing and always
 answer.
 
@@ -197,6 +201,15 @@ to provide.
 
 Anything else is a message for Claude. An unrecognised `/word` is treated as
 prose rather than rejected.
+
+Commands are registered **per guild**, for the guilds behind the channels in
+`access.json`. Guild commands appear immediately; global ones take up to an hour
+to propagate. Because application commands are visible to everyone who can see
+the channel, each invocation is authority-checked against the same allowlist as
+inbound messages, and replies are **ephemeral** — the answer goes to whoever
+asked, not the channel. Registration needs the bot to have been invited with the
+`applications.commands` scope; without it the daemon logs a warning and the
+plain-text form keeps working.
 
 ## Configuration
 

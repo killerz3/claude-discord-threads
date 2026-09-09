@@ -16,6 +16,7 @@ import { Signals } from './discord/signals'
 import { fetchSendable, resolveConversation, renameThread } from './discord/threads'
 import { PermissionBroker } from './discord/permissions'
 import { handleCommand } from './discord/commands'
+import { attachSlashHandler, registerGuildCommands } from './discord/slash'
 import { composeTurnContent } from './discord/inbound'
 import { log, describeError } from './log'
 import { StatusLine } from './discord/status'
@@ -223,6 +224,41 @@ async function sweepIdleThreads(): Promise<void> {
   }
 }
 
+/**
+ * Queue work that arrived as a slash command rather than a message.
+ *
+ * There is no Discord Message to hang signals off, which the turn pipeline
+ * already tolerates (`message: null`, as on crash recovery). A synthetic
+ * inbound id keeps the UNIQUE idempotency key meaningful.
+ */
+async function enqueueSyntheticTurn(
+  conversationId: string,
+  content: string,
+  userId: string,
+): Promise<boolean> {
+  const thread = repo.getThread(conversationId)
+  if (!thread) return false
+
+  const turn = repo.enqueueTurn({
+    threadId: conversationId,
+    inboundMessageId: `slash-${conversationId}-${Date.now()}`,
+    authorId: userId,
+    content,
+  })
+  if (!turn) return false
+
+  void delivery.submit({
+    turn,
+    conversationId,
+    message: null,
+    sessionId: thread.cc_session_id,
+    cwd: thread.cwd,
+    model: thread.model,
+    permissionMode: thread.permission_mode,
+  })
+  return true
+}
+
 async function sendTyping(channelId: string): Promise<void> {
   const ch = await client.channels.fetch(channelId)
   if (ch && 'sendTyping' in ch) await ch.sendTyping()
@@ -261,6 +297,26 @@ async function hydrate(turn: TurnRow): Promise<TurnContext | null> {
  * This is the half of durability the official plugin has no answer for: with
  * no daemon running, an inbound message simply vanishes.
  */
+/**
+ * The guilds behind the opted-in channels. Commands are registered per guild,
+ * but access.json is keyed on channels, so resolve one to the other.
+ */
+async function guildIdsForOptedInChannels(): Promise<string[]> {
+  const ids: string[] = []
+  for (const channelId of Object.keys(loadAccess().groups)) {
+    try {
+      const ch = await client.channels.fetch(channelId)
+      if (ch && 'guildId' in ch && ch.guildId) ids.push(ch.guildId)
+    } catch (err) {
+      log.debug('could not resolve guild for channel', {
+        channel: channelId,
+        error: describeError(err),
+      })
+    }
+  }
+  return ids
+}
+
 async function replayBacklog(): Promise<number> {
   const access = loadAccess()
   let queued = 0
@@ -303,6 +359,20 @@ client.once('clientReady', async c => {
   // Only allowlisted accounts may answer a permission prompt — a button in a
   // shared channel must not let a bystander approve a tool call.
   permissions.attach(userId => loadAccess().allowFrom.includes(userId))
+
+  // Register the slash commands so they show up in Discord's picker. Plain
+  // text keeps working either way; registration is purely discoverability.
+  attachSlashHandler(client, {
+    isAllowedUser: userId => loadAccess().allowFrom.includes(userId),
+    contextFor: conversationId => ({
+      client,
+      repo,
+      conversationId,
+      interrupt: id => delivery.interrupt(id),
+    }),
+    enqueueTurn: enqueueSyntheticTurn,
+  })
+  await registerGuildCommands(client, await guildIdsForOptedInChannels())
   const sweep = setInterval(() => void sweepIdleThreads(), ARCHIVE_SWEEP_MS)
   if (typeof sweep === 'object' && 'unref' in sweep) sweep.unref()
   const recovered = await delivery.recover(hydrate)
