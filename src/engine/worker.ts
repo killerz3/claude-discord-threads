@@ -34,12 +34,17 @@ const SYSTEM_APPEND = [
 
 export type WorkerOptions = {
   model?: string
-  /** Answers permission prompts; wired to Discord buttons in Phase 4. */
-  canUseTool?: Options['canUseTool']
+  /**
+   * Builds the permission handler for a turn. It is per-turn rather than
+   * global because the prompt has to be posted into the thread that triggered
+   * it, and the callback itself carries no conversation context.
+   */
+  canUseToolFor?: (ctx: TurnContext) => Options['canUseTool']
 }
 
 export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
   return async (ctx: TurnContext): Promise<ResponderResult> => {
+    const canUseTool = workerOpts.canUseToolFor?.(ctx)
     const options: Options = {
       cwd: ctx.cwd,
       // Keep Claude Code's own system prompt and append to it, rather than
@@ -50,9 +55,7 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       settingSources: ['user', 'project'],
       ...(ctx.sessionId ? { resume: ctx.sessionId } : {}),
       ...(workerOpts.model ? { model: workerOpts.model } : {}),
-      ...(workerOpts.canUseTool
-        ? { canUseTool: workerOpts.canUseTool, permissionPrompts: 'host' as const }
-        : {}),
+      ...(canUseTool ? { canUseTool, permissionPrompts: 'host' as const } : {}),
     }
 
     let finalText = ''

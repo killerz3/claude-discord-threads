@@ -14,6 +14,8 @@ import { Repo } from './store/repo'
 import { gate, loadAccess, noteSent, watchApprovals } from './discord/access'
 import { Signals } from './discord/signals'
 import { fetchSendable, resolveConversation, renameThread } from './discord/threads'
+import { PermissionBroker } from './discord/permissions'
+import { StatusLine } from './discord/status'
 import { Delivery, type Responder, type TurnContext } from './engine/delivery'
 import { acquireSingleInstanceLock } from './lock'
 import { echoResponder } from './engine/echo'
@@ -55,6 +57,7 @@ const client = new Client({
 })
 
 const signals = new Signals(client)
+const permissions = new PermissionBroker(client, db)
 
 /**
  * Swappable so Phase 1 can run the whole pipeline — gate, threads, signals,
@@ -62,8 +65,11 @@ const signals = new Signals(client)
  */
 async function buildResponder(): Promise<Responder> {
   if (process.env.DISCORD_RESPONDER === 'echo') return echoResponder
-  const { claudeResponder } = await import('./engine/worker')
-  return claudeResponder
+  const { makeClaudeResponder } = await import('./engine/worker')
+  return makeClaudeResponder({
+    // Bind each turn's permission prompts to the thread that triggered them.
+    canUseToolFor: ctx => permissions.forConversation(ctx.conversationId, ctx.turn.id),
+  })
 }
 
 const delivery = new Delivery({
@@ -96,6 +102,13 @@ async function handleInbound(msg: Message): Promise<void> {
 
   if (msg.channel.type === ChannelType.DM) dmChannelUsers.set(msg.channelId, msg.author.id)
 
+  // "y abcde" answers a pending permission prompt; it is consent, not a turn.
+  // The sender already passed the gate, so the answer is trusted.
+  if (permissions.handleTextReply(msg.content)) {
+    void signals.react(msg, msg.content.trim().toLowerCase().startsWith('y') ? '✅' : '❌')
+    return
+  }
+
   // Acknowledge receipt before doing anything slow. If the process dies after
   // this point the watermark and ledger still cover the message.
   await signals.seen(msg)
@@ -125,6 +138,7 @@ async function handleInbound(msg: Message): Promise<void> {
   if (!turn) return
 
   signals.startTyping(convo.id, () => sendTyping(convo.id))
+  const status = new StatusLine(client, convo.id)
   void delivery
     .submit({
       turn,
@@ -132,8 +146,28 @@ async function handleInbound(msg: Message): Promise<void> {
       message: msg,
       sessionId: thread.cc_session_id,
       cwd: thread.cwd,
+      onToolUse: tool => status.note(tool),
     })
-    .finally(() => signals.stopTyping(convo.id))
+    .finally(async () => {
+      signals.stopTyping(convo.id)
+      await status.close()
+      await titleThread(convo.id, msg.content)
+    })
+}
+
+/**
+ * Name a thread after its opening message, once. Discord shows the name in the
+ * sidebar, so an untitled thread is hard to find later.
+ */
+async function titleThread(conversationId: string, seed: string): Promise<void> {
+  const thread = repo.getThread(conversationId)
+  if (!thread || thread.title || thread.guild_id === null) return
+  try {
+    await renameThread(client, conversationId, seed)
+    repo.setThreadTitle(conversationId, seed.slice(0, 200))
+  } catch {
+    // Renaming needs MANAGE_THREADS unless we own the thread. Cosmetic.
+  }
 }
 
 async function sendTyping(channelId: string): Promise<void> {
@@ -214,6 +248,9 @@ client.once('clientReady', async c => {
   )
   // The access skill signals approvals by dropping files; pick them up.
   watchApprovals(client)
+  // Only allowlisted accounts may answer a permission prompt — a button in a
+  // shared channel must not let a bystander approve a tool call.
+  permissions.attach(userId => loadAccess().allowFrom.includes(userId))
   const recovered = await delivery.recover(hydrate)
   const replayed = await replayBacklog()
   process.stderr.write(
@@ -232,6 +269,8 @@ async function shutdown(): Promise<void> {
   // anything unfinished is still on the ledger and replays next boot.
   const forced = setTimeout(() => process.exit(0), 10_000)
   if (typeof forced === 'object' && 'unref' in forced) forced.unref()
+  // Deny anything still waiting on a button so no worker hangs on shutdown.
+  permissions.drain()
   await delivery.drain().catch(() => {})
   await signals.drain().catch(() => {})
   await Promise.resolve(client.destroy()).catch(() => {})

@@ -57,8 +57,14 @@ export const MAX_LIVE_WORKERS = Number(process.env.DISCORD_MAX_WORKERS ?? 3)
  *  so the next message resumes the same conversation. */
 export const WORKER_IDLE_MS = 20 * 60 * 1000
 
-/** How long a permission request waits on Discord buttons before denying. */
-export const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000
+/**
+ * How long a permission request waits on Discord buttons before denying.
+ * Read per call rather than captured at import, so it stays overridable
+ * whatever order modules happen to load in.
+ */
+export function permissionTimeoutMs(): number {
+  return Number(process.env.DISCORD_PERMISSION_TIMEOUT_MS ?? 5 * 60 * 1000)
+}
 
 /** Discord's typing indicator lapses after ~10s; refresh inside that. */
 export const TYPING_REFRESH_MS = 8000
