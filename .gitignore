@@ -1,0 +1,7 @@
+# Secrets and runtime state never belong in this repo (the fork is public).
+.env
+*.db
+*.db-wal
+*.db-shm
+inbox/
+node_modules/

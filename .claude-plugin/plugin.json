@@ -1,0 +1,12 @@
+{
+  "name": "discord-threads",
+  "description": "Discord channel for Claude Code, thread-per-conversation. A daemon owns the gateway and guarantees delivery; each Discord thread is its own Claude Code session. Manage access via /discord-threads:access.",
+  "version": "0.1.0",
+  "keywords": [
+    "discord",
+    "messaging",
+    "channel",
+    "daemon",
+    "threads"
+  ]
+}
