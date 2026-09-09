@@ -16,6 +16,7 @@ import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { ACCESS_FILE, APPROVED_DIR, STATE_DIR } from '../config'
+import { log, describeError } from '../log'
 
 export type PendingEntry = {
   senderId: string
@@ -65,7 +66,7 @@ export function loadAccess(): Access {
     // Corrupt file: move aside rather than silently reverting to defaults,
     // which would drop the allowlist and re-open pairing.
     try { renameSync(ACCESS_FILE, `${ACCESS_FILE}.corrupt-${Date.now()}`) } catch {}
-    process.stderr.write('discord-threads: access.json is corrupt, moved aside. Starting fresh.\n')
+    log.warn('access.json is corrupt, moved aside; starting fresh')
     return defaultAccess()
   }
 }
@@ -202,7 +203,7 @@ export function watchApprovals(client: Client, intervalMs = 5000): Timer {
             noteSent(sent.id)
           }
         } catch (err) {
-          process.stderr.write(`discord-threads: approval confirm failed: ${err}\n`)
+          log.error('approval confirm failed', { error: describeError(err) })
         } finally {
           // Remove either way — never loop on a send that cannot succeed.
           rmSync(file, { force: true })

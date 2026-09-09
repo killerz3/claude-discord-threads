@@ -26,6 +26,7 @@ import { randomBytes } from 'crypto'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import type { Database } from 'bun:sqlite'
 import { permissionTimeoutMs } from '../config'
+import { log, describeError } from '../log'
 import { fetchSendable } from './threads'
 import { noteSent } from './access'
 
@@ -133,7 +134,7 @@ export class PermissionBroker {
       })
 
       void this.post(pending, options).catch(err => {
-        process.stderr.write(`discord-threads: permission prompt failed to post: ${err}\n`)
+        log.error('permission prompt failed to post', { error: describeError(err) })
         // If we cannot ask, we must not silently allow.
         this.settle(code, {
           behavior: 'deny',

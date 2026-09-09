@@ -75,7 +75,37 @@ export class Repo {
     ])
   }
 
+  /**
+   * Open threads with no activity since `before`. Drives idle archiving, and
+   * is ordered oldest-first so a sweep that hits a rate limit makes progress
+   * on the stalest ones.
+   */
+  idleThreads(before: number): ThreadRow[] {
+    return this.db
+      .query<ThreadRow, [number]>(
+        `SELECT * FROM threads
+         WHERE state = 'open' AND last_active_at < ?
+         ORDER BY last_active_at ASC`,
+      )
+      .all(before)
+  }
+
   // ---- turns ------------------------------------------------------------
+
+  turnCount(threadId: string): { done: number; failed: number; open: number } {
+    const rows = this.db
+      .query<{ state: string; c: number }, [string]>(
+        'SELECT state, count(*) AS c FROM turns WHERE thread_id = ? GROUP BY state',
+      )
+      .all(threadId)
+    const out = { done: 0, failed: 0, open: 0 }
+    for (const r of rows) {
+      if (r.state === 'done') out.done += r.c
+      else if (r.state === 'failed') out.failed += r.c
+      else out.open += r.c
+    }
+    return out
+  }
 
   /**
    * Record an inbound message as owed work.

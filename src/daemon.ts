@@ -8,13 +8,16 @@
  */
 
 import { Client, GatewayIntentBits, Partials, ChannelType, type Message } from 'discord.js'
-import { loadEnvFile, MAX_LIVE_WORKERS } from './config'
+import { ARCHIVE_SWEEP_MS, loadEnvFile, MAX_LIVE_WORKERS, THREAD_IDLE_MS } from './config'
 import { openDb, type TurnRow } from './store/db'
 import { Repo } from './store/repo'
 import { gate, loadAccess, noteSent, watchApprovals } from './discord/access'
 import { Signals } from './discord/signals'
 import { fetchSendable, resolveConversation, renameThread } from './discord/threads'
 import { PermissionBroker } from './discord/permissions'
+import { handleCommand } from './discord/commands'
+import { composeTurnContent } from './discord/inbound'
+import { log, describeError } from './log'
 import { StatusLine } from './discord/status'
 import { Delivery, type Responder, type TurnContext } from './engine/delivery'
 import { acquireSingleInstanceLock } from './lock'
@@ -95,7 +98,7 @@ async function handleInbound(msg: Message): Promise<void> {
       )
       noteSent(sent.id)
     } catch (err) {
-      process.stderr.write(`discord-threads: failed to send pairing code: ${err}\n`)
+      log.error('failed to send pairing code', { error: describeError(err) })
     }
     return
   }
@@ -114,6 +117,22 @@ async function handleInbound(msg: Message): Promise<void> {
   await signals.seen(msg)
 
   const convo = await resolveConversation(msg, repo)
+
+  // Slash commands are answered directly: no model, no ledger entry, and
+  // therefore no way for them to go unanswered.
+  const command = await handleCommand(msg.content, {
+    client,
+    repo,
+    conversationId: convo.id,
+  })
+  if (command.handled) {
+    repo.setWatermark(convo.channelId, msg.id)
+    const ch = await fetchSendable(client, convo.id)
+    const sent = await ch.send(command.reply)
+    noteSent(sent.id)
+    await signals.settled(msg, true)
+    return
+  }
   const thread =
     repo.getThread(convo.id) ??
     repo.createThread({
@@ -127,11 +146,16 @@ async function handleInbound(msg: Message): Promise<void> {
       state: 'open',
     })
 
+  // Attachments are downloaded here rather than exposed as a tool: workers get
+  // no Discord tools at all, so this is the only path by which an image or a
+  // log file reaches the model.
+  const content = await composeTurnContent(msg)
+
   const turn = repo.enqueueTurn({
     threadId: convo.id,
     inboundMessageId: msg.id,
     authorId: msg.author.id,
-    content: msg.content,
+    content,
   })
   repo.setWatermark(convo.channelId, msg.id)
   // Already held: a gateway redelivery or a backlog replay raced us.
@@ -167,6 +191,30 @@ async function titleThread(conversationId: string, seed: string): Promise<void> 
     repo.setThreadTitle(conversationId, seed.slice(0, 200))
   } catch {
     // Renaming needs MANAGE_THREADS unless we own the thread. Cosmetic.
+  }
+}
+
+/**
+ * Archive threads nobody has touched in a while. Nothing is lost: the ledger
+ * keeps the session id, and posting in an archived thread reopens it.
+ */
+async function sweepIdleThreads(): Promise<void> {
+  const stale = repo.idleThreads(Date.now() - THREAD_IDLE_MS)
+  for (const thread of stale) {
+    if (thread.guild_id === null) continue // DMs have no threads to archive
+    try {
+      const ch = await client.channels.fetch(thread.thread_id)
+      if (ch?.isThread() && !ch.archived) await ch.setArchived(true)
+      repo.archiveThread(thread.thread_id)
+      log.info('archived idle thread', { thread: thread.thread_id })
+    } catch (err) {
+      // Archiving needs MANAGE_THREADS. Without it this is a no-op every
+      // sweep, so log once per thread at debug rather than warning loudly.
+      log.debug('could not archive thread', {
+        thread: thread.thread_id,
+        error: describeError(err),
+      })
+    }
   }
 }
 
@@ -224,7 +272,7 @@ async function replayBacklog(): Promise<number> {
         queued++
       }
     } catch (err) {
-      process.stderr.write(`discord-threads: backlog replay failed for ${channelId}: ${err}\n`)
+      log.error('backlog replay failed', { channel: channelId, error: describeError(err) })
     }
   }
   return queued
@@ -233,38 +281,38 @@ async function replayBacklog(): Promise<number> {
 client.on('messageCreate', msg => {
   if (msg.author.bot) return
   handleInbound(msg).catch(err =>
-    process.stderr.write(`discord-threads: handleInbound failed: ${err}\n`),
+    log.error('handleInbound failed', { message: msg.id, error: describeError(err) }),
   )
 })
 
-client.on('error', err => process.stderr.write(`discord-threads: client error: ${err}\n`))
+client.on('error', err => log.error('gateway client error', { error: describeError(err) }))
 
 // 'clientReady' rather than 'ready': the latter is deprecated in discord.js 14
 // and is removed in v15, where it means the raw gateway READY instead.
 client.once('clientReady', async c => {
-  process.stderr.write(
-    `discord-threads: gateway connected as ${c.user.tag} ` +
-      `(max ${MAX_LIVE_WORKERS} concurrent turns)\n`,
-  )
+  log.info('gateway connected', { as: c.user.tag, maxConcurrentTurns: MAX_LIVE_WORKERS })
   // The access skill signals approvals by dropping files; pick them up.
   watchApprovals(client)
   // Only allowlisted accounts may answer a permission prompt — a button in a
   // shared channel must not let a bystander approve a tool call.
   permissions.attach(userId => loadAccess().allowFrom.includes(userId))
+  const sweep = setInterval(() => void sweepIdleThreads(), ARCHIVE_SWEEP_MS)
+  if (typeof sweep === 'object' && 'unref' in sweep) sweep.unref()
   const recovered = await delivery.recover(hydrate)
   const replayed = await replayBacklog()
-  process.stderr.write(
-    `discord-threads: recovery — ${recovered.replayed} in-flight replayed, ` +
-      `${recovered.reconciled} already delivered, ${recovered.dropped} unrecoverable, ` +
-      `${replayed} from backlog\n`,
-  )
+  log.info('recovery complete', {
+    replayed: recovered.replayed,
+    alreadyDelivered: recovered.reconciled,
+    unrecoverable: recovered.dropped,
+    fromBacklog: replayed,
+  })
 })
 
 let shuttingDown = false
 async function shutdown(): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
-  process.stderr.write('discord-threads: shutting down\n')
+  log.info('shutting down')
   // Give in-flight turns a chance to land before dropping the connection;
   // anything unfinished is still on the ledger and replays next boot.
   const forced = setTimeout(() => process.exit(0), 10_000)
@@ -281,10 +329,10 @@ async function shutdown(): Promise<void> {
 process.on('SIGTERM', () => void shutdown())
 process.on('SIGINT', () => void shutdown())
 process.on('unhandledRejection', err =>
-  process.stderr.write(`discord-threads: unhandled rejection: ${err}\n`),
+  log.error('unhandled rejection', { error: describeError(err) }),
 )
 process.on('uncaughtException', err =>
-  process.stderr.write(`discord-threads: uncaught exception: ${err}\n`),
+  log.error('uncaught exception', { error: describeError(err) }),
 )
 
 export { renameThread }

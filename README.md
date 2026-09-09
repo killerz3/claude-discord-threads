@@ -93,12 +93,91 @@ handler, and attachment download into `inbox/`.
 
 ## Install
 
-The plugin ships the `/discord-threads:access` skill for managing the allowlist
-from your terminal. That skill only edits JSON and opens **no** Discord
-connection, so installing it in interactive sessions is free.
+Two halves with opposite lifecycles: a skill you install into Claude Code, and a
+daemon that runs on its own.
 
-The daemon is separate and runs as a `systemd --user` service. Disable the
-official `discord` plugin first, or you will keep a second gateway login.
+**1. Disable the official plugin.** Leave it on and every Claude Code session
+opens its own gateway login on the same token — the bug this fork exists to fix.
+
+```jsonc
+// ~/.claude/settings.json
+"enabledPlugins": { "discord@claude-plugins-official": false }
+```
+
+**2. Point the token at the daemon.** Nothing moves if you already ran the
+official plugin; it reads the same files.
+
+```bash
+mkdir -p ~/.claude/channels/discord
+printf 'DISCORD_BOT_TOKEN=%s\n' "$TOKEN" > ~/.claude/channels/discord/.env
+chmod 600 ~/.claude/channels/discord/.env
+```
+
+**3. Install dependencies.**
+
+```bash
+cd external_plugins/discord-threads && bun install
+```
+
+**4. Run the daemon.** Check it in the foreground first — it refuses to start
+twice, so this is safe even if a copy is already running:
+
+```bash
+bun run src/daemon.ts          # expect "gateway connected as <bot>"
+DISCORD_RESPONDER=echo bun run src/daemon.ts   # pipeline test, no model tokens
+```
+
+Then install the service (edit the two paths in the unit if your checkout is
+elsewhere):
+
+```bash
+cp systemd/discord-threads.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now discord-threads
+journalctl --user -u discord-threads -f
+```
+
+`loginctl enable-linger $USER` keeps it running when you are logged out.
+
+**5. Opt a channel in**, from your own terminal — never in response to a Discord
+message:
+
+```
+/discord-threads:access group add <channel-id> --no-mention
+```
+
+## Thread commands
+
+Handled by the daemon, so they cost nothing and always answer:
+
+| | |
+|---|---|
+| `/help` | the list |
+| `/status` | session id, working directory, turn counts |
+| `/cwd [path]` | show or change the directory this thread works in |
+| `/done` | archive the thread |
+
+Anything else is a message for Claude. An unrecognised `/word` is treated as
+prose rather than rejected.
+
+## Configuration
+
+Environment variables, all optional:
+
+| | |
+|---|---|
+| `DISCORD_MAX_WORKERS` | concurrent turns (default 3) |
+| `DISCORD_PERMISSION_MODE` | worker permission mode (default `auto`) |
+| `DISCORD_PERMISSION_TIMEOUT_MS` | how long a prompt waits for a button (default 5 min) |
+| `DISCORD_THREAD_IDLE_MS` | archive a thread after this long idle (default 24h) |
+| `DISCORD_WORKER_CWD` | default working directory for new threads |
+| `DISCORD_RESPONDER=echo` | echo instead of calling the model |
+| `DISCORD_LOG_LEVEL` / `DISCORD_LOG_JSON` | `debug`–`error`; `1` for JSON lines |
+
+`auto` is the mode Claude Code's own interactive sessions use: a classifier
+approves routine calls and escalates the rest to the Discord buttons. The
+stricter `default` prompts on every Bash call, which in practice means several
+buttons per question.
 
 ## Configuration
 

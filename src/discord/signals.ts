@@ -9,6 +9,7 @@
 
 import type { Client, Message } from 'discord.js'
 import { TYPING_REFRESH_MS } from '../config'
+import { log, describeError } from '../log'
 
 export const SEEN = '👀'
 export const WORKING = '⏳'
@@ -26,7 +27,7 @@ export class Signals {
   private enqueue(label: string, fn: () => Promise<unknown>): Promise<void> {
     this.queue = this.queue
       .then(fn)
-      .catch(err => process.stderr.write(`discord-threads: signal ${label} failed: ${err}\n`))
+      .catch(err => log.debug('signal failed', { signal: label, error: describeError(err) }))
     return this.queue as Promise<void>
   }
 

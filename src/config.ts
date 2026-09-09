@@ -66,5 +66,17 @@ export function permissionTimeoutMs(): number {
   return Number(process.env.DISCORD_PERMISSION_TIMEOUT_MS ?? 5 * 60 * 1000)
 }
 
+/**
+ * Archive a thread after this long with no activity. Keeps the sidebar
+ * readable; the conversation is not lost, since posting reopens the thread and
+ * the session id is still on the ledger.
+ */
+export const THREAD_IDLE_MS = Number(
+  process.env.DISCORD_THREAD_IDLE_MS ?? 24 * 60 * 60 * 1000,
+)
+
+/** How often to sweep for idle threads. */
+export const ARCHIVE_SWEEP_MS = 30 * 60 * 1000
+
 /** Discord's typing indicator lapses after ~10s; refresh inside that. */
 export const TYPING_REFRESH_MS = 8000
