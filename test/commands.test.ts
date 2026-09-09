@@ -15,6 +15,7 @@ import type { Client } from 'discord.js'
 import { openDb } from '../src/store/db'
 import { Repo } from '../src/store/repo'
 import { handleCommand } from '../src/discord/commands'
+import { describeCompaction } from '../src/engine/worker'
 
 function setup(
   opts: { archived?: () => void; failArchive?: boolean; running?: boolean } = {},
@@ -309,5 +310,41 @@ describe('/threads', () => {
     repo.archiveThread('thread-1')
     const out = await handleCommand('/threads', ctx)
     expect(out.handled && out.reply).toContain('No open threads')
+  })
+})
+
+describe('/compact', () => {
+  test('falls through, because Claude Code handles it natively', async () => {
+    const { ctx } = setup()
+    // The CLI intercepts /compact before the model. Handling it in the daemon
+    // would replace a working implementation with a worse one.
+    expect((await handleCommand('/compact', ctx)).handled).toBe(false)
+  })
+
+  test('is advertised in /help, marked as the one that costs tokens', async () => {
+    const { ctx } = setup()
+    const out = await handleCommand('/help', ctx)
+    const reply = out.handled ? out.reply : ''
+    expect(reply).toContain('/compact')
+    expect(reply).toContain('costs tokens')
+  })
+})
+
+describe('compaction reporting', () => {
+  test('a silent compaction becomes a readable answer, not an error', () => {
+    // /compact succeeds with an EMPTY result string, which would otherwise
+    // trip the "produced no reply" path and post ❌ for a command that worked.
+    const text = describeCompaction({ preTokens: 15867, postTokens: 1922, durationMs: 12319 })
+    expect(text).toContain('15,867')
+    expect(text).toContain('1,922')
+    expect(text).toContain('13,945')
+    expect(text).toContain('12.3s')
+  })
+
+  test('reads sensibly when the post-compaction size is unknown', () => {
+    const text = describeCompaction({ preTokens: 5000 })
+    expect(text).toContain('5,000')
+    expect(text).not.toContain('NaN')
+    expect(text).not.toContain('undefined')
   })
 })

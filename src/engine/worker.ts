@@ -79,13 +79,19 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
 
     let finalText = ''
     let sessionId: string | undefined
+    let compaction: Compaction | undefined
 
     try {
       for await (const message of query({ prompt: ctx.turn.content, options })) {
         const outcome = consume(message, ctx)
         if (outcome.sessionId) sessionId = outcome.sessionId
+        if (outcome.compaction) compaction = outcome.compaction
         if (outcome.text !== undefined) finalText = outcome.text
         if (outcome.result) {
+          // A command that succeeded silently is not a failure.
+          if (outcome.result.kind === 'error' && compaction) {
+            return { kind: 'reply', text: describeCompaction(compaction), sessionId }
+          }
           // Only a reply carries a session id; retry/error results have no
           // room for one, and the id is already persisted by then anyway.
           return outcome.result.kind === 'reply'
@@ -106,19 +112,57 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     // The stream ended without a result message — treat as a failure rather
     // than posting nothing, so the turn is visibly settled either way.
     if (!finalText.trim()) {
+      if (compaction) return { kind: 'reply', text: describeCompaction(compaction), sessionId }
       return { kind: 'error', message: 'the model produced no reply' }
     }
     return { kind: 'reply', text: finalText, sessionId }
   }
 }
 
+export type Compaction = { preTokens: number; postTokens?: number; durationMs?: number }
+
 type Consumed = {
   sessionId?: string
   text?: string
+  compaction?: Compaction
   result?: ResponderResult
 }
 
+/**
+ * Compaction reports itself and returns nothing.
+ *
+ * Claude Code's `/compact` is handled by the CLI, not the model, and it
+ * completes with an *empty* result string. Left alone that trips the
+ * "produced no reply" path and the thread gets an error for a command that
+ * actually succeeded — so the boundary event is turned into the answer.
+ */
+export function describeCompaction(c: Compaction): string {
+  const parts = [`🗜️ Compacted this conversation.`]
+  if (typeof c.postTokens === 'number') {
+    const saved = c.preTokens - c.postTokens
+    parts.push(
+      `${c.preTokens.toLocaleString()} → ${c.postTokens.toLocaleString()} tokens ` +
+        `(${saved.toLocaleString()} dropped).`,
+    )
+  } else {
+    parts.push(`Was ${c.preTokens.toLocaleString()} tokens.`)
+  }
+  if (typeof c.durationMs === 'number') parts.push(`Took ${(c.durationMs / 1000).toFixed(1)}s.`)
+  return parts.join(' ')
+}
+
 function consume(message: SDKMessage, ctx: TurnContext): Consumed {
+  if (message.type === 'system' && message.subtype === 'compact_boundary') {
+    const meta = message.compact_metadata
+    return {
+      compaction: {
+        preTokens: meta.pre_tokens,
+        postTokens: meta.post_tokens,
+        durationMs: meta.duration_ms,
+      },
+    }
+  }
+
   if (message.type === 'assistant') {
     // Surface tool activity as a live status line while the turn runs.
     for (const block of message.message.content) {

@@ -4,13 +4,18 @@
  * A message starting with `/` is handled here and never reaches the model, so
  * these cost nothing and always answer.
  *
- * Several mirror Claude Code's own slash commands. Only the ones with a real
- * data source are here: `/usage`, `/context` and `/model` read the same
- * structured data the CLI's commands read, via SDK control requests that boot
- * the CLI without ever submitting a turn. Commands that are inherently
- * interactive or terminal-bound — `/config`, `/vim`, `/doctor`, `/login`,
- * `/resume` — have no sensible Discord translation and are deliberately absent;
- * so is `/compact`, which is a model action rather than a lookup.
+ * Several mirror Claude Code's own slash commands. `/usage`, `/context` and
+ * `/model` read the same structured data the CLI's commands read, via SDK
+ * control requests that boot the CLI without ever submitting a turn.
+ *
+ * `/compact` is the exception: it is advertised in `/help` but handled *by the
+ * CLI itself*, so it merely has to reach the worker untouched. It is also the
+ * one advertised command that is not free, since compaction is a real
+ * summarisation call.
+ *
+ * Commands that are inherently interactive or terminal-bound — `/config`,
+ * `/vim`, `/doctor`, `/login`, `/resume` — have no sensible Discord
+ * translation and are deliberately absent.
  *
  * These are plain text, not Discord application commands. Registering real
  * slash commands would need an application-command scope and a deploy step, and
@@ -49,6 +54,7 @@ const HELP = [
   '`/context` — context window used by this conversation',
   '`/model [name]` — show, list or set the model for this thread',
   '`/permissions [mode]` — show or set the permission mode',
+  '`/compact` — summarise this conversation to free up context _(costs tokens)_',
   '',
   '**Elsewhere**',
   '`/threads` — every open thread',
@@ -90,6 +96,10 @@ export async function handleCommand(raw: string, ctx: CommandContext): Promise<C
       return reply(permissions(ctx, arg))
     case 'threads':
       return reply(threads(ctx))
+    // /compact is deliberately absent from this switch. Claude Code's own CLI
+    // intercepts it before the model, so it only has to reach the worker —
+    // handling it here would replace a working implementation with a worse
+    // one. It is the one command in /help that is not free.
     default:
       // Unknown slashes fall through to the model rather than erroring — the
       // user may genuinely have meant "/foo" as prose.

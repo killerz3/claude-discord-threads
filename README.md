@@ -167,6 +167,7 @@ answer.
 | `/context` | context window used by this conversation |
 | `/model [name]` | show, list or set the model for this thread |
 | `/permissions [mode]` | show or set the permission mode |
+| `/compact` | summarise the conversation to free up context — **costs tokens** |
 
 | Elsewhere | |
 |---|---|
@@ -178,11 +179,21 @@ session whose prompt stream never yields, asks its question, and closes. The CLI
 boots but no turn is ever submitted, so these spend no tokens. Results are
 cached briefly because each call costs a process spawn.
 
+`/compact` is the exception to "free": it is a real summarisation call. It is
+also the one command the daemon does *not* implement — Claude Code's CLI
+intercepts it before the model, so the daemon just lets it through. Compaction
+completes with an empty result, which would otherwise post an error for a
+command that worked, so the daemon reports the boundary event instead:
+
+```
+🗜️ Compacted this conversation. 15,867 → 1,922 tokens (13,945 dropped). Took 12.3s.
+```
+
 Commands that are inherently interactive or terminal-bound — `/config`, `/vim`,
 `/doctor`, `/login`, `/resume` — have no sensible Discord translation and are
-deliberately absent. So is `/compact`, which is a model action rather than a
-lookup. `bypassPermissions` is not offered to `/permissions`: granting it from a
-chat message would remove the approval path the buttons exist to provide.
+deliberately absent. `bypassPermissions` is not offered to `/permissions`:
+granting it from a chat message would remove the approval path the buttons exist
+to provide.
 
 Anything else is a message for Claude. An unrecognised `/word` is treated as
 prose rather than rejected.
