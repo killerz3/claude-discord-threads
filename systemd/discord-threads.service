@@ -1,0 +1,33 @@
+[Unit]
+Description=discord-threads — Discord channel daemon for Claude Code
+Documentation=https://github.com/killerz3/claude-plugins-official/tree/discord-threads/external_plugins/discord-threads
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two paths for your install.
+WorkingDirectory=%h/claude-plugins-official/external_plugins/discord-threads
+ExecStart=%h/.bun/bin/bun run src/daemon.ts
+
+# The bot token is read from ~/.claude/channels/discord/.env by the daemon
+# itself, so it is never in this unit, the environment block, or argv.
+
+Restart=always
+RestartSec=5
+# Give in-flight turns a chance to land. Anything unfinished is still on the
+# ledger and replays on the next boot, so this is politeness, not correctness.
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=discord-threads
+
+# The daemon spawns Claude Code workers, which need a real HOME and a writable
+# state directory, so the sandboxing here is deliberately mild.
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=default.target
