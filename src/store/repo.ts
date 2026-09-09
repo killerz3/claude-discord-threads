@@ -64,6 +64,30 @@ export class Repo {
     this.db.run('UPDATE threads SET cwd = ? WHERE thread_id = ?', [cwd, threadId])
   }
 
+  setThreadModel(threadId: string, model: string | null): void {
+    this.db.run('UPDATE threads SET model = ? WHERE thread_id = ?', [model, threadId])
+  }
+
+  setThreadPermissionMode(threadId: string, mode: string | null): void {
+    this.db.run('UPDATE threads SET permission_mode = ? WHERE thread_id = ?', [mode, threadId])
+  }
+
+  /**
+   * Forget the conversation but keep the thread. `/clear` uses this: the next
+   * message starts a fresh Claude Code session in the same Discord thread.
+   */
+  clearThreadSession(threadId: string): void {
+    this.db.run('UPDATE threads SET cc_session_id = NULL WHERE thread_id = ?', [threadId])
+  }
+
+  openThreads(): ThreadRow[] {
+    return this.db
+      .query<ThreadRow, []>(
+        "SELECT * FROM threads WHERE state = 'open' ORDER BY last_active_at DESC",
+      )
+      .all()
+  }
+
   archiveThread(threadId: string): void {
     this.db.run("UPDATE threads SET state = 'archived' WHERE thread_id = ?", [threadId])
   }
@@ -149,6 +173,56 @@ export class Repo {
       Date.now(),
       id,
     ])
+  }
+
+  /**
+   * Record what a turn consumed, straight off the SDK result. Persisting it
+   * means /cost is a database read rather than another model call.
+   */
+  recordTurnUsage(
+    id: number,
+    usage: { costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number },
+  ): void {
+    this.db.run(
+      `UPDATE turns SET cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?
+       WHERE id = ?`,
+      [
+        usage.costUsd ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.durationMs ?? null,
+        id,
+      ],
+    )
+  }
+
+  /**
+   * Totals for one thread. Cost is cumulative *per query() call* in the SDK,
+   * so each turn's recorded value is that turn's own total and summing is
+   * correct here — unlike summing across results inside one streaming session.
+   */
+  threadUsage(threadId: string): {
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+    turns: number
+  } {
+    const row = this.db
+      .query<
+        { cost: number | null; inp: number | null; out: number | null; n: number },
+        [string]
+      >(
+        `SELECT sum(cost_usd) AS cost, sum(input_tokens) AS inp,
+                sum(output_tokens) AS out, count(*) AS n
+         FROM turns WHERE thread_id = ? AND state = 'done'`,
+      )
+      .get(threadId)
+    return {
+      costUsd: row?.cost ?? 0,
+      inputTokens: row?.inp ?? 0,
+      outputTokens: row?.out ?? 0,
+      turns: row?.n ?? 0,
+    }
   }
 
   setStatusMessage(id: number, messageId: string): void {

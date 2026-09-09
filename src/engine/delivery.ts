@@ -28,11 +28,23 @@ export type TurnContext = {
   /** Resumes the thread's existing Claude Code session when set. */
   sessionId: string | null
   cwd: string
+  /** Per-thread overrides; null means fall back to the daemon default. */
+  model?: string | null
+  permissionMode?: string | null
+  /** Aborted by `/stop`. The worker passes it to the SDK. */
+  abort?: AbortController
   onToolUse?: (label: string) => void
 }
 
 export type ResponderResult =
-  | { kind: 'reply'; text: string; sessionId?: string; files?: string[]; title?: string }
+  | {
+      kind: 'reply'
+      text: string
+      sessionId?: string
+      files?: string[]
+      title?: string
+      usage?: { costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number }
+    }
   /** Transient — the turn goes back on the queue rather than failing. */
   | { kind: 'retry'; afterMs: number; reason: string }
   | { kind: 'error'; message: string }
@@ -52,6 +64,8 @@ export type DeliveryDeps = {
 export class Delivery {
   /** Serial chain per conversation: turns in one thread stay ordered. */
   private chains = new Map<string, Promise<void>>()
+  /** In-flight turns, so `/stop` can reach the right one. */
+  private running = new Map<string, AbortController>()
   private live = 0
   private waiters: Array<() => void> = []
   private stopped = false
@@ -102,11 +116,13 @@ export class Delivery {
     const msg = ctx.message
 
     await this.acquire()
+    const abort = ctx.abort ?? new AbortController()
+    this.running.set(ctx.conversationId, abort)
     try {
       repo.setTurnState(ctx.turn.id, 'running')
       if (msg) void signals.working(msg)
 
-      const result = await this.deps.responder({ ...ctx, turn: fresh })
+      const result = await this.deps.responder({ ...ctx, turn: fresh, abort })
 
       if (result.kind === 'retry') {
         // Not a failure: the obligation stands, so put it back on the queue.
@@ -124,6 +140,7 @@ export class Delivery {
       }
 
       if (result.sessionId) repo.setThreadSession(ctx.conversationId, result.sessionId)
+      if (result.usage) repo.recordTurnUsage(ctx.turn.id, result.usage)
 
       // Mark the intent to send *before* sending. A crash between here and
       // finishTurn leaves the row in `delivering`, which recovery treats as
@@ -146,8 +163,17 @@ export class Delivery {
       await this.post(ctx, `❌ ${message}`).catch(() => {})
       if (msg) await signals.settled(msg, false).catch(() => {})
     } finally {
+      if (this.running.get(ctx.conversationId) === abort) this.running.delete(ctx.conversationId)
       this.release()
     }
+  }
+
+  /** Cancel the turn running in a conversation. Returns false if none is. */
+  interrupt(conversationId: string): boolean {
+    const abort = this.running.get(conversationId)
+    if (!abort) return false
+    abort.abort()
+    return true
   }
 
   private async post(ctx: TurnContext, text: string, files?: string[]): Promise<string[]> {

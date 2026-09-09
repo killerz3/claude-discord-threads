@@ -124,6 +124,7 @@ async function handleInbound(msg: Message): Promise<void> {
     client,
     repo,
     conversationId: convo.id,
+    interrupt: id => delivery.interrupt(id),
   })
   if (command.handled) {
     repo.setWatermark(convo.channelId, msg.id)
@@ -144,6 +145,8 @@ async function handleInbound(msg: Message): Promise<void> {
       cwd: DEFAULT_CWD,
       title: null,
       state: 'open',
+      model: null,
+      permission_mode: null,
     })
 
   // Attachments are downloaded here rather than exposed as a tool: workers get
@@ -170,6 +173,8 @@ async function handleInbound(msg: Message): Promise<void> {
       message: msg,
       sessionId: thread.cc_session_id,
       cwd: thread.cwd,
+      model: thread.model,
+      permissionMode: thread.permission_mode,
       onToolUse: tool => status.note(tool),
     })
     .finally(async () => {
@@ -245,6 +250,8 @@ async function hydrate(turn: TurnRow): Promise<TurnContext | null> {
     message,
     sessionId: thread.cc_session_id,
     cwd: thread.cwd,
+    model: thread.model,
+    permissionMode: thread.permission_mode,
   }
 }
 

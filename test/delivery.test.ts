@@ -58,6 +58,8 @@ function harness(responder: Responder) {
     cwd: '/tmp',
     title: null,
     state: 'open',
+    model: null,
+    permission_mode: null,
   })
   return { db, repo, delivery, sent }
 }

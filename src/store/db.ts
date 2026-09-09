@@ -38,6 +38,10 @@ export type ThreadRow = {
   cwd: string
   title: string | null
   state: 'open' | 'archived'
+  /** Per-thread model override; null means the account default. */
+  model: string | null
+  /** Per-thread permission mode override; null means the daemon default. */
+  permission_mode: string | null
   created_at: number
   last_active_at: number
 }
@@ -54,6 +58,11 @@ export type TurnRow = {
   reply_message_ids: string | null
   error: string | null
   attempts: number
+  /** Usage recorded off the SDK result, so /cost needs no model call. */
+  cost_usd: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  duration_ms: number | null
   created_at: number
   updated_at: number
 }
@@ -68,6 +77,8 @@ CREATE TABLE IF NOT EXISTS threads (
   cwd             TEXT NOT NULL,
   title           TEXT,
   state           TEXT NOT NULL DEFAULT 'open',
+  model           TEXT,
+  permission_mode TEXT,
   created_at      INTEGER NOT NULL,
   last_active_at  INTEGER NOT NULL
 );
@@ -85,6 +96,10 @@ CREATE TABLE IF NOT EXISTS turns (
   reply_message_ids  TEXT,
   error              TEXT,
   attempts           INTEGER NOT NULL DEFAULT 0,
+  cost_usd           REAL,
+  input_tokens       INTEGER,
+  output_tokens      INTEGER,
+  duration_ms        INTEGER,
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL
 );
@@ -111,6 +126,36 @@ CREATE TABLE IF NOT EXISTS permissions (
 );
 `
 
+/**
+ * Add columns introduced after a database was first created.
+ *
+ * The daemon is long-lived and upgraded in place, so an existing threads.db
+ * predates these columns. SQLite has no ADD COLUMN IF NOT EXISTS, so compare
+ * against the live schema rather than catching errors, which would also
+ * swallow genuine failures.
+ */
+function migrate(db: Database): void {
+  const columns = (table: string): Set<string> =>
+    new Set(
+      db
+        .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+        .all()
+        .map(r => r.name),
+    )
+
+  const additions: Array<[string, string, string]> = [
+    ['threads', 'model', 'TEXT'],
+    ['threads', 'permission_mode', 'TEXT'],
+    ['turns', 'cost_usd', 'REAL'],
+    ['turns', 'input_tokens', 'INTEGER'],
+    ['turns', 'output_tokens', 'INTEGER'],
+    ['turns', 'duration_ms', 'INTEGER'],
+  ]
+  for (const [table, column, type] of additions) {
+    if (!columns(table).has(column)) db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  }
+}
+
 export function openDb(path = DB_FILE): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const db = new Database(path, { create: true })
@@ -121,5 +166,6 @@ export function openDb(path = DB_FILE): Database {
   // silently unanswered message, which is the exact bug this replaces.
   db.run('PRAGMA synchronous = FULL')
   db.run(SCHEMA)
+  migrate(db)
   return db
 }

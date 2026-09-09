@@ -148,14 +148,41 @@ message:
 
 ## Thread commands
 
-Handled by the daemon, so they cost nothing and always answer:
+Handled by the daemon, never by the model, so they cost nothing and always
+answer.
 
-| | |
+| Thread | |
 |---|---|
 | `/help` | the list |
-| `/status` | session id, working directory, turn counts |
-| `/cwd [path]` | show or change the directory this thread works in |
+| `/status` | session, model, directory, turn counts |
+| `/cwd [path]` | show or change this thread's working directory |
+| `/clear` | forget the conversation, keep the thread |
+| `/stop` | cancel the turn that is running |
 | `/done` | archive the thread |
+
+| Claude | |
+|---|---|
+| `/usage` | plan limits — 5-hour and weekly windows, with reset times |
+| `/cost` | what this thread has spent |
+| `/context` | context window used by this conversation |
+| `/model [name]` | show, list or set the model for this thread |
+| `/permissions [mode]` | show or set the permission mode |
+
+| Elsewhere | |
+|---|---|
+| `/threads` | every open thread |
+
+`/usage`, `/context` and `/model` read the same structured data as Claude
+Code's own slash commands, through SDK **control requests**: the daemon opens a
+session whose prompt stream never yields, asks its question, and closes. The CLI
+boots but no turn is ever submitted, so these spend no tokens. Results are
+cached briefly because each call costs a process spawn.
+
+Commands that are inherently interactive or terminal-bound — `/config`, `/vim`,
+`/doctor`, `/login`, `/resume` — have no sensible Discord translation and are
+deliberately absent. So is `/compact`, which is a model action rather than a
+lookup. `bypassPermissions` is not offered to `/permissions`: granting it from a
+chat message would remove the approval path the buttons exist to provide.
 
 Anything else is a message for Claude. An unrecognised `/word` is treated as
 prose rather than rejected.

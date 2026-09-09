@@ -66,9 +66,14 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       // Load the user's CLAUDE.md and settings so the worker behaves like the
       // operator's own sessions. Note this also means their hooks run.
       settingSources: ['user', 'project'],
-      permissionMode: workerOpts.permissionMode ?? DEFAULT_PERMISSION_MODE,
+      // Per-thread overrides beat the daemon default, so /model and
+      // /permissions take effect on the very next message.
+      permissionMode: (ctx.permissionMode ??
+        workerOpts.permissionMode ??
+        DEFAULT_PERMISSION_MODE) as NonNullable<Options['permissionMode']>,
+      ...(ctx.abort ? { abortController: ctx.abort } : {}),
       ...(ctx.sessionId ? { resume: ctx.sessionId } : {}),
-      ...(workerOpts.model ? { model: workerOpts.model } : {}),
+      ...(ctx.model ?? workerOpts.model ? { model: ctx.model ?? workerOpts.model } : {}),
       ...(canUseTool ? { canUseTool, permissionPrompts: 'host' as const } : {}),
     }
 
@@ -93,6 +98,8 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       if (retry !== null) {
         return { kind: 'retry', afterMs: retry, reason: 'rate limited' }
       }
+      // An abort is /stop, not a crash: say so plainly.
+      if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.' }
       return { kind: 'error', message: describe(err) }
     }
 
@@ -137,7 +144,21 @@ function consume(message: SDKMessage, ctx: TurnContext): Consumed {
     if (!text) {
       return { sessionId, result: { kind: 'error', message: 'the model produced no reply' } }
     }
-    return { sessionId, text, result: { kind: 'reply', text, sessionId } }
+    return {
+      sessionId,
+      text,
+      result: {
+        kind: 'reply',
+        text,
+        sessionId,
+        usage: {
+          costUsd: message.total_cost_usd,
+          inputTokens: message.usage?.input_tokens,
+          outputTokens: message.usage?.output_tokens,
+          durationMs: message.duration_ms,
+        },
+      },
+    }
   }
 
   return { sessionId, result: { kind: 'error', message: describeResultError(message.subtype) } }
