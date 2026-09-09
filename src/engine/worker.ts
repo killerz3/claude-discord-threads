@@ -32,8 +32,21 @@ const SYSTEM_APPEND = [
   'Discord splits messages over 2000 characters, so prefer brevity over exhaustiveness.',
 ].join(' ')
 
+/**
+ * Match the operator's interactive sessions, which run with auto mode on.
+ *
+ * 'auto' puts a model classifier in front of the permission system: routine
+ * calls are approved without asking, and only genuinely risky ones escalate to
+ * canUseTool — i.e. to a Discord button. The SDK default is 'default', which
+ * prompts on every Bash call and makes the bot unusable for offloading work.
+ */
+const DEFAULT_PERMISSION_MODE = (process.env.DISCORD_PERMISSION_MODE ??
+  'auto') as NonNullable<Options['permissionMode']>
+
 export type WorkerOptions = {
   model?: string
+  /** Defaults to 'auto'. See DEFAULT_PERMISSION_MODE. */
+  permissionMode?: Options['permissionMode']
   /**
    * Builds the permission handler for a turn. It is per-turn rather than
    * global because the prompt has to be posted into the thread that triggered
@@ -53,6 +66,7 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       // Load the user's CLAUDE.md and settings so the worker behaves like the
       // operator's own sessions. Note this also means their hooks run.
       settingSources: ['user', 'project'],
+      permissionMode: workerOpts.permissionMode ?? DEFAULT_PERMISSION_MODE,
       ...(ctx.sessionId ? { resume: ctx.sessionId } : {}),
       ...(workerOpts.model ? { model: workerOpts.model } : {}),
       ...(canUseTool ? { canUseTool, permissionPrompts: 'host' as const } : {}),
