@@ -1,13 +1,13 @@
 [Unit]
 Description=discord-threads — Discord channel daemon for Claude Code
-Documentation=https://github.com/killerz3/claude-plugins-official/tree/discord-threads/external_plugins/discord-threads
+Documentation=https://github.com/killerz3/claude-discord-threads
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # Adjust these two paths for your install.
-WorkingDirectory=%h/claude-plugins-official/external_plugins/discord-threads
+WorkingDirectory=%h/claude-discord-threads
 ExecStart=%h/.bun/bin/bun run src/daemon.ts
 
 # The bot token is read from ~/.claude/channels/discord/.env by the daemon

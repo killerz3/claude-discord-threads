@@ -3,9 +3,15 @@
 A Discord channel for Claude Code where **each conversation is a thread** and
 **delivery is guaranteed by a daemon rather than remembered by the model**.
 
-> **This is a modified fork.** It derives from `external_plugins/discord` in
-> [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official),
-> Apache-2.0. See [What changed](#what-changed-vs-the-official-plugin).
+> **Derived work.** This started as a fork of `external_plugins/discord` in
+> [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
+> (Apache-2.0) and now lives in its own repository. See
+> [What changed](#what-changed-vs-the-official-plugin).
+>
+> **Runs on a persistent Linux host.** Unlike the other channel plugins, this one
+> is a long-lived daemon: it needs [Bun](https://bun.sh), `systemd --user`, and a
+> machine that stays on. Claude Code itself is started by the daemon, not the
+> other way round. That is the point, see [Why](#why).
 
 ## Why
 
@@ -120,10 +126,12 @@ printf 'DISCORD_BOT_TOKEN=%s\n' "$TOKEN" > ~/.claude/channels/discord/.env
 chmod 600 ~/.claude/channels/discord/.env
 ```
 
-**3. Install dependencies.**
+**3. Get the code and install dependencies.** The unit file assumes the checkout
+is at `~/claude-discord-threads`; edit `WorkingDirectory` if you put it elsewhere.
 
 ```bash
-cd external_plugins/discord-threads && bun install
+git clone https://github.com/killerz3/claude-discord-threads ~/claude-discord-threads
+cd ~/claude-discord-threads && bun install
 ```
 
 **4. Run the daemon.** Check it in the foreground first — it refuses to start
@@ -146,7 +154,15 @@ journalctl --user -u discord-threads -f
 
 `loginctl enable-linger $USER` keeps it running when you are logged out.
 
-**5. Opt a channel in**, from your own terminal — never in response to a Discord
+**5. Install the skills into Claude Code**, so `/discord-threads:access` and
+`/discord-threads:configure` are available in your own terminal:
+
+```
+/plugin marketplace add killerz3/claude-discord-threads
+/plugin install discord-threads@claude-discord-threads
+```
+
+**6. Opt a channel in**, from your own terminal — never in response to a Discord
 message:
 
 ```
@@ -258,7 +274,7 @@ approves routine calls and escalates the rest to the Discord buttons. The
 stricter `default` prompts on every Bash call, which in practice means several
 buttons per question.
 
-## Configuration
+## State on disk
 
 State stays where the official plugin puts it, so no migration is needed:
 

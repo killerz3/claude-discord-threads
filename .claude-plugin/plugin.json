@@ -2,6 +2,13 @@
   "name": "discord-threads",
   "description": "Discord channel for Claude Code, thread-per-conversation. A daemon owns the gateway and guarantees delivery; each Discord thread is its own Claude Code session. Manage access via /discord-threads:access.",
   "version": "0.1.0",
+  "author": {
+    "name": "killerz3",
+    "url": "https://github.com/killerz3"
+  },
+  "homepage": "https://github.com/killerz3/claude-discord-threads",
+  "repository": "https://github.com/killerz3/claude-discord-threads",
+  "license": "Apache-2.0",
   "keywords": [
     "discord",
     "messaging",

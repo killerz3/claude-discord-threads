@@ -1,0 +1,16 @@
+{
+  "name": "claude-discord-threads",
+  "owner": {
+    "name": "killerz3",
+    "url": "https://github.com/killerz3"
+  },
+  "plugins": [
+    {
+      "name": "discord-threads",
+      "description": "Discord channel for Claude Code, thread-per-conversation. A daemon owns the gateway and guarantees delivery; each Discord thread is its own Claude Code session.",
+      "source": "./",
+      "category": "productivity",
+      "keywords": ["discord", "messaging", "channel", "daemon", "threads"]
+    }
+  ]
+}
