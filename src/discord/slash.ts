@@ -49,8 +49,11 @@ export const SLASH_COMMANDS: CommandSpec[] = [
   { name: 'context', description: 'Context window used by this conversation' },
   {
     name: 'model',
-    description: 'Show, list or set the model for this thread',
-    option: { name: 'name', description: 'Model name, "list", or "default" to reset' },
+    description: 'Show, list or set the model — for this thread, or for every new thread',
+    option: {
+      name: 'name',
+      description: 'Model name, "list", "default" to reset, or "global <name>" for new threads',
+    },
   },
   {
     name: 'permissions',

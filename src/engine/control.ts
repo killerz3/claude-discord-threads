@@ -108,6 +108,17 @@ export async function availableModels(cwd: string): Promise<ModelChoice[]> {
   }
 }
 
+/**
+ * Display name for a model value, but only if the list is already cached.
+ *
+ * The thread header is written on the hot path of thread creation, and
+ * spawning a CLI to prettify one line is not worth the latency — an unadorned
+ * model id is a fine fallback.
+ */
+export function cachedModelDisplayName(value: string): string | null {
+  return modelCache?.value.find(m => m.value === value)?.displayName || null
+}
+
 export type ContextUsage = { used: number | null; total: number | null }
 
 /**

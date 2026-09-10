@@ -8,12 +8,23 @@
  */
 
 import { Client, GatewayIntentBits, Partials, ChannelType, type Message } from 'discord.js'
-import { ARCHIVE_SWEEP_MS, loadEnvFile, MAX_LIVE_WORKERS, THREAD_IDLE_MS } from './config'
+import {
+  ARCHIVE_SWEEP_MS,
+  DEFAULT_CWD,
+  loadEnvFile,
+  MAX_LIVE_WORKERS,
+  THREAD_IDLE_MS,
+} from './config'
 import { openDb, type TurnRow } from './store/db'
 import { Repo } from './store/repo'
 import { gate, loadAccess, noteSent, watchApprovals } from './discord/access'
 import { Signals } from './discord/signals'
-import { fetchSendable, resolveConversation, renameThread } from './discord/threads'
+import {
+  fetchSendable,
+  resolveConversation,
+  renameThread,
+  syncModelHeader,
+} from './discord/threads'
 import { PermissionBroker } from './discord/permissions'
 import { handleCommand } from './discord/commands'
 import { attachSlashHandler, registerGuildCommands } from './discord/slash'
@@ -43,8 +54,6 @@ if (!lock.acquired) {
   process.stderr.write(`discord-threads: already running as pid ${lock.heldBy}. Refusing to start.\n`)
   process.exit(1)
 }
-
-const DEFAULT_CWD = process.env.DISCORD_WORKER_CWD ?? process.env.HOME ?? process.cwd()
 
 const db = openDb()
 const repo = new Repo(db)
@@ -84,6 +93,16 @@ const delivery = new Delivery({
   chunkMode: 'newline',
 })
 
+/**
+ * The channel a message's watermark belongs to.
+ *
+ * Watermarks are per-channel, and a thread's backlog is tracked against its
+ * parent, so a message inside a thread reports the parent rather than itself.
+ */
+function parentChannelOf(msg: Message): string {
+  return msg.channel.isThread() ? (msg.channel.parentId ?? msg.channelId) : msg.channelId
+}
+
 /** DM channel id → user id, for the outbound allowlist check on DMs. */
 const dmChannelUsers = new Map<string, string>()
 
@@ -117,26 +136,33 @@ async function handleInbound(msg: Message): Promise<void> {
   // this point the watermark and ledger still cover the message.
   await signals.seen(msg)
 
-  const convo = await resolveConversation(msg, repo)
-
   // Slash commands are answered directly: no model, no ledger entry, and
   // therefore no way for them to go unanswered.
+  //
+  // Dispatched *before* resolveConversation, which would otherwise open a
+  // thread to hold the answer. A command typed in a channel is about the
+  // channel, not about a thread the user never asked for — and the thread it
+  // opened had no ledger row yet, so every thread-scoped command answered
+  // "no record of this thread" no matter what the user typed.
   const command = await handleCommand(msg.content, {
     client,
     repo,
-    conversationId: convo.id,
+    conversationId: msg.channelId,
     interrupt: id => delivery.interrupt(id),
   })
   if (command.handled) {
-    repo.setWatermark(convo.channelId, msg.id)
-    const ch = await fetchSendable(client, convo.id)
+    repo.setWatermark(parentChannelOf(msg), msg.id)
+    const ch = await fetchSendable(client, msg.channelId)
     const sent = await ch.send(command.reply)
     noteSent(sent.id)
     await signals.settled(msg, true)
     return
   }
+
+  const convo = await resolveConversation(msg, repo)
+  const existing = repo.getThread(convo.id)
   const thread =
-    repo.getThread(convo.id) ??
+    existing ??
     repo.createThread({
       thread_id: convo.id,
       channel_id: convo.channelId,
@@ -146,9 +172,23 @@ async function handleInbound(msg: Message): Promise<void> {
       cwd: DEFAULT_CWD,
       title: null,
       state: 'open',
-      model: null,
+      // A new thread inherits the global default set by `/model global`. It is
+      // copied, not referenced, so changing the default later cannot move a
+      // conversation already under way onto a different model.
+      model: repo.defaultModel(),
       permission_mode: null,
+      header_message_id: null,
     })
+
+  // Say which model is answering, as the thread's first message. Awaited so it
+  // lands above the reply rather than racing it.
+  if (!existing && convo.created) {
+    try {
+      await syncModelHeader(client, repo, convo.id, { create: true })
+    } catch (err) {
+      log.debug('could not post model header', { thread: convo.id, error: describeError(err) })
+    }
+  }
 
   // Attachments are downloaded here rather than exposed as a tool: workers get
   // no Discord tools at all, so this is the only path by which an image or a
@@ -396,6 +436,9 @@ async function shutdown(): Promise<void> {
   if (typeof forced === 'object' && 'unref' in forced) forced.unref()
   // Deny anything still waiting on a button so no worker hangs on shutdown.
   permissions.drain()
+  // Anything still running is about to be killed with the cgroup. Mark it as
+  // owed rather than failed, so the next boot replays it.
+  delivery.beginShutdown()
   await delivery.drain().catch(() => {})
   await signals.drain().catch(() => {})
   await Promise.resolve(client.destroy()).catch(() => {})

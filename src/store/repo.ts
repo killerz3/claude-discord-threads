@@ -25,8 +25,9 @@ export class Repo {
     this.db.run(
       `INSERT INTO threads
          (thread_id, channel_id, root_message_id, guild_id, cc_session_id,
-          cwd, title, state, created_at, last_active_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          cwd, title, state, model, permission_mode, header_message_id,
+          created_at, last_active_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(thread_id) DO NOTHING`,
       [
         row.thread_id,
@@ -37,6 +38,9 @@ export class Repo {
         row.cwd,
         row.title,
         row.state,
+        row.model,
+        row.permission_mode,
+        row.header_message_id,
         now,
         now,
       ],
@@ -70,6 +74,46 @@ export class Repo {
 
   setThreadPermissionMode(threadId: string, mode: string | null): void {
     this.db.run('UPDATE threads SET permission_mode = ? WHERE thread_id = ?', [mode, threadId])
+  }
+
+  setThreadHeaderMessage(threadId: string, messageId: string | null): void {
+    this.db.run('UPDATE threads SET header_message_id = ? WHERE thread_id = ?', [
+      messageId,
+      threadId,
+    ])
+  }
+
+  // ---- settings ---------------------------------------------------------
+
+  getSetting(key: string): string | null {
+    const row = this.db
+      .query<{ value: string | null }, [string]>('SELECT value FROM settings WHERE key = ?')
+      .get(key)
+    return row?.value ?? null
+  }
+
+  setSetting(key: string, value: string | null): void {
+    if (value === null) {
+      this.db.run('DELETE FROM settings WHERE key = ?', [key])
+      return
+    }
+    this.db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [key, value, Date.now()],
+    )
+  }
+
+  /**
+   * The model new threads start on. Null means the account default, which is
+   * what an install that has never run `/model global` gets.
+   */
+  defaultModel(): string | null {
+    return this.getSetting('default_model')
+  }
+
+  setDefaultModel(model: string | null): void {
+    this.setSetting('default_model', model)
   }
 
   /**

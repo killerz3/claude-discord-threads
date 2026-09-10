@@ -60,6 +60,7 @@ function harness(responder: Responder) {
     state: 'open',
     model: null,
     permission_mode: null,
+    header_message_id: null,
   })
   return { db, repo, delivery, sent }
 }
@@ -304,5 +305,93 @@ describe('watermarks', () => {
     // Out-of-order gateway delivery must not re-open handled messages.
     repo.setWatermark('chan-1', '1546748256178933800')
     expect(repo.getWatermark('chan-1')).toBe('1546748256178933822')
+  })
+})
+
+describe('restart', () => {
+  /** A second Delivery over the same ledger — i.e. the next boot. */
+  function reboot(repo: Repo, responder: Responder) {
+    const { sent, ch } = fakeChannel()
+    const delivery = new Delivery({
+      repo,
+      signals: noopSignals,
+      responder,
+      resolveTarget: async () => ch,
+    })
+    return { delivery, sent }
+  }
+
+  test('a turn killed by an operator restart is owed, not failed', async () => {
+    // systemd sends SIGTERM to the whole cgroup, so the worker's Claude Code
+    // child dies and the SDK throws. That is indistinguishable from a crash at
+    // the catch site, and marking it `failed` is what lost a real reply.
+    let live!: Delivery
+    const { repo, delivery, sent } = harness(async () => {
+      live.beginShutdown()
+      throw new Error('Claude Code process exited with code 143')
+    })
+    live = delivery
+    const turn = repo.enqueueTurn({
+      threadId: 'thread-1',
+      inboundMessageId: 'msg-1',
+      authorId: 'user-1',
+      content: 'hi',
+    })!
+
+    await delivery.submit(ctxFor(repo, turn.id))
+
+    const after = repo.getTurn(turn.id)!
+    expect(after.state).toBe('queued')
+    expect(after.error).toContain('interrupted by restart')
+    // No ❌ for something the operator did on purpose.
+    expect(sent).toEqual([])
+
+    const next = reboot(repo, reply('the answer, a restart late'))
+    const stats = await next.delivery.recover(async t => ctxFor(repo, t.id))
+    await next.delivery.drain()
+
+    expect(stats.replayed).toBe(1)
+    expect(next.sent).toEqual(['the answer, a restart late'])
+    expect(repo.getTurn(turn.id)!.state).toBe('done')
+  })
+
+  test('a turn the user stopped is not resurrected by a restart', async () => {
+    let live!: Delivery
+    const abort = new AbortController()
+    const { repo, delivery } = harness(async () => {
+      live.beginShutdown()
+      return { kind: 'error', message: 'Stopped.' }
+    })
+    live = delivery
+    const turn = repo.enqueueTurn({
+      threadId: 'thread-1',
+      inboundMessageId: 'msg-1',
+      authorId: 'user-1',
+      content: 'hi',
+    })!
+    abort.abort()
+
+    await delivery.submit({ ...ctxFor(repo, turn.id), abort })
+
+    expect(repo.getTurn(turn.id)!.state).toBe('failed')
+  })
+
+  test('a turn that keeps outliving restarts is eventually dropped', async () => {
+    const { repo, delivery } = harness(reply('never gets here'))
+    const turn = repo.enqueueTurn({
+      threadId: 'thread-1',
+      inboundMessageId: 'msg-1',
+      authorId: 'user-1',
+      content: 'hi',
+    })!
+    // Three restarts have already replayed this one; a fourth is more likely
+    // to be the cause of the crash than a victim of it.
+    for (let i = 0; i < 3; i++) repo.requeueTurn(turn.id, 'interrupted by restart: boom')
+
+    const stats = await delivery.recover(async t => ctxFor(repo, t.id))
+
+    expect(stats.replayed).toBe(0)
+    expect(stats.dropped).toBe(1)
+    expect(repo.getTurn(turn.id)!.error).toContain('gave up after')
   })
 })

@@ -26,6 +26,8 @@ import { statSync } from 'fs'
 import type { Client } from 'discord.js'
 import type { Repo } from '../store/repo'
 import { availableModels, contextUsage, planUsage } from '../engine/control'
+import { syncModelHeader } from './threads'
+import { DEFAULT_CWD } from '../config'
 import { log, describeError } from '../log'
 
 export type CommandOutcome = { handled: false } | { handled: true; reply: string }
@@ -53,6 +55,8 @@ const HELP = [
   '`/cost` — what this thread has spent',
   '`/context` — context window used by this conversation',
   '`/model [name]` — show, list or set the model for this thread',
+  '`/model global [name]` — the model every new thread starts on',
+  '_(outside a thread, `/model` is `/model global` — there is no thread to set)_',
   '`/permissions [mode]` — show or set the permission mode',
   '`/compact` — summarise this conversation to free up context _(costs tokens)_',
   '',
@@ -108,7 +112,9 @@ export async function handleCommand(raw: string, ctx: CommandContext): Promise<C
 }
 
 const reply = (text: string): CommandOutcome => ({ handled: true, reply: text })
-const NO_THREAD = 'No record of this thread yet — send a message first.'
+const NO_THREAD =
+  'This is about a single conversation, and there is no conversation here yet — ' +
+  'send a message to start a thread, then run it in there.'
 
 function status(ctx: CommandContext): string {
   const thread = ctx.repo.getThread(ctx.conversationId)
@@ -117,7 +123,8 @@ function status(ctx: CommandContext): string {
   return [
     `**state** ${thread.state}`,
     `**cwd** \`${thread.cwd}\``,
-    `**model** ${thread.model ?? 'default'}`,
+    `**model** ${thread.model ?? 'account default'}`,
+    `**new threads** ${ctx.repo.defaultModel() ?? 'account default'}`,
     `**permissions** ${thread.permission_mode ?? 'auto'}`,
     `**session** \`${thread.cc_session_id ?? 'not started'}\``,
     `**turns** ${turns.done} done, ${turns.failed} failed, ${turns.open} open`,
@@ -239,34 +246,127 @@ async function context(ctx: CommandContext): Promise<string> {
     .join('\n')
 }
 
-async function model(ctx: CommandContext, arg: string): Promise<string> {
-  const thread = ctx.repo.getThread(ctx.conversationId)
-  if (!thread) return NO_THREAD
+/** Words that mean "stop overriding and fall back". */
+const RESET_WORDS = ['default', 'reset', 'none', 'clear']
 
-  if (!arg || arg.toLowerCase() === 'list') {
-    const models = await availableModels(thread.cwd)
-    const current = `Model for this thread: **${thread.model ?? 'default'}**`
-    if (models.length === 0) return `${current}\nCould not list available models right now.`
-    const list = models.map(m => `\`${m.value}\` — ${m.displayName}`).join('\n')
-    return `${current}\n\n${list}\n\nSet one with \`/model <name>\`.`
-  }
-
-  if (arg.toLowerCase() === 'default' || arg.toLowerCase() === 'reset') {
-    ctx.repo.setThreadModel(ctx.conversationId, null)
-    return 'Model reset to the account default for this thread.'
-  }
-
-  const models = await availableModels(thread.cwd)
-  // Accept an exact value, or a display name typed casually ("opus").
+/**
+ * Resolve what the user typed to a model value.
+ *
+ * An exact value or a casually typed display name ("opus") both work. If the
+ * list is unavailable — the control session failed — the raw string is taken
+ * on trust rather than blocking a legitimate change on a transient failure.
+ */
+async function resolveModelArg(
+  cwd: string,
+  arg: string,
+): Promise<{ value: string } | { error: string }> {
+  const models = await availableModels(cwd)
   const match =
     models.find(m => m.value.toLowerCase() === arg.toLowerCase()) ??
     models.find(m => m.displayName.toLowerCase() === arg.toLowerCase())
   if (models.length > 0 && !match) {
-    return `Unknown model \`${arg}\`. Run \`/model list\` to see the options.`
+    return { error: `Unknown model \`${arg}\`. Run \`/model list\` to see the options.` }
   }
-  const value = match?.value ?? arg
-  ctx.repo.setThreadModel(ctx.conversationId, value)
-  return `Model set to \`${value}\` for this thread, starting with the next message.`
+  return { value: match?.value ?? arg }
+}
+
+async function model(ctx: CommandContext, arg: string): Promise<string> {
+  const raw = arg.trim()
+  const lower = raw.toLowerCase()
+
+  // `global` is answered before the thread lookup, so it also works from a
+  // channel that has no conversation yet — which is exactly where you would
+  // set the default for the threads that channel is about to spawn.
+  if (lower === 'global' || lower.startsWith('global ')) {
+    return await globalModel(ctx, raw.slice('global'.length).trim())
+  }
+
+  // A channel has no conversation of its own, so there is no thread model to
+  // show or set there — the only model setting that means anything is the one
+  // new threads open on. Answering that beats an error about a thread the user
+  // never asked about.
+  const thread = ctx.repo.getThread(ctx.conversationId)
+  if (!thread) return await globalModel(ctx, raw)
+  const fallback = ctx.repo.defaultModel()
+
+  if (!raw || lower === 'list') {
+    const models = await availableModels(thread.cwd)
+    const current = [
+      `Model for this thread: **${thread.model ?? 'account default'}**`,
+      `New threads start on: **${fallback ?? 'account default'}**`,
+    ].join('\n')
+    if (models.length === 0) return `${current}\nCould not list available models right now.`
+    const list = models.map(m => `\`${m.value}\` — ${m.displayName}`).join('\n')
+    return (
+      `${current}\n\n${list}\n\n` +
+      'Set this thread with `/model <name>`, or every new thread with `/model global <name>`.'
+    )
+  }
+
+  // Resetting a thread returns it to the global default, not past it: the
+  // global setting is the thing an operator configured on purpose.
+  if (RESET_WORDS.includes(lower)) {
+    ctx.repo.setThreadModel(ctx.conversationId, fallback)
+    await refreshHeader(ctx)
+    return fallback
+      ? `Model reset to the default for new threads, \`${fallback}\`.`
+      : 'Model reset to the account default for this thread.'
+  }
+
+  const resolved = await resolveModelArg(thread.cwd, raw)
+  if ('error' in resolved) return resolved.error
+  ctx.repo.setThreadModel(ctx.conversationId, resolved.value)
+  await refreshHeader(ctx)
+  return `Model set to \`${resolved.value}\` for this thread, starting with the next message.`
+}
+
+/**
+ * The model new threads start on.
+ *
+ * It is a starting point, not a live binding: an open thread keeps whatever it
+ * was opened with, so changing this cannot silently move a conversation onto a
+ * different model mid-way.
+ */
+async function globalModel(ctx: CommandContext, arg: string): Promise<string> {
+  const current = ctx.repo.defaultModel()
+  const raw = arg.trim()
+  const lower = raw.toLowerCase()
+
+  if (!raw || lower === 'list') {
+    const models = await availableModels(ctx.repo.getThread(ctx.conversationId)?.cwd ?? DEFAULT_CWD)
+    const head = `New threads start on: **${current ?? 'account default'}**`
+    if (models.length === 0) return `${head}\nCould not list available models right now.`
+    const list = models.map(m => `\`${m.value}\` — ${m.displayName}`).join('\n')
+    return `${head}\n\n${list}\n\nSet it with \`/model global <name>\`.`
+  }
+
+  if (RESET_WORDS.includes(lower)) {
+    ctx.repo.setDefaultModel(null)
+    return 'New threads will use the account default. Open threads keep theirs.'
+  }
+
+  const resolved = await resolveModelArg(
+    ctx.repo.getThread(ctx.conversationId)?.cwd ?? DEFAULT_CWD,
+    raw,
+  )
+  if ('error' in resolved) return resolved.error
+  ctx.repo.setDefaultModel(resolved.value)
+  return (
+    `New threads will start on \`${resolved.value}\`. ` +
+    'Open threads keep the model they were opened with — use `/model <name>` to move one.'
+  )
+}
+
+/** Keep the thread's banner honest after a change. Cosmetic, never fatal. */
+async function refreshHeader(ctx: CommandContext): Promise<void> {
+  try {
+    await syncModelHeader(ctx.client, ctx.repo, ctx.conversationId)
+  } catch (err) {
+    log.debug('could not update model header', {
+      conversationId: ctx.conversationId,
+      error: describeError(err),
+    })
+  }
 }
 
 function permissions(ctx: CommandContext, arg: string): string {

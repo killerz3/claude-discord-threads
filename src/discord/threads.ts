@@ -19,6 +19,7 @@ import {
   type TextChannel,
 } from 'discord.js'
 import type { Repo } from '../store/repo'
+import { cachedModelDisplayName } from '../engine/control'
 import { noteSent } from './access'
 import { chunk, clampChunkLimit, threadName } from './util'
 
@@ -159,6 +160,61 @@ export async function sendReply(
     }
   }
   return { ids }
+}
+
+/**
+ * The banner posted as a thread's first message.
+ *
+ * A thread inherits the global default at the moment it is opened, so which
+ * model is answering is otherwise invisible — and it is the one setting that
+ * changes what a reply costs. Saying it once, on top, is cheaper to read than
+ * running `/status`.
+ */
+export function modelHeaderText(model: string | null): string {
+  const label =
+    model === null
+      ? '**account default**'
+      : (() => {
+          const display = cachedModelDisplayName(model)
+          return display && display !== model ? `**${display}** (\`${model}\`)` : `**${model}**`
+        })()
+  return `🧠 Model: ${label} · change it with \`/model <name>\``
+}
+
+/**
+ * Write the thread's model banner, editing the existing one if there is one.
+ *
+ * `create` is false for `/model` in a DM or in a thread opened before this
+ * existed: there is nothing to edit and a banner arriving mid-conversation
+ * would read as a stray message, so the change is reported in the reply only.
+ * An edit that fails (banner deleted) falls back to the same rule.
+ */
+export async function syncModelHeader(
+  client: Client,
+  repo: Repo,
+  threadId: string,
+  opts: { create?: boolean } = {},
+): Promise<void> {
+  const thread = repo.getThread(threadId)
+  if (!thread) return
+  const text = modelHeaderText(thread.model)
+
+  if (thread.header_message_id) {
+    try {
+      const ch = await fetchSendable(client, threadId)
+      const existing = await ch.messages.fetch(thread.header_message_id)
+      await existing.edit(text)
+      return
+    } catch {
+      repo.setThreadHeaderMessage(threadId, null)
+    }
+  }
+  if (!opts.create) return
+
+  const ch = await fetchSendable(client, threadId)
+  const sent = await ch.send(text)
+  noteSent(sent.id)
+  repo.setThreadHeaderMessage(threadId, sent.id)
 }
 
 /** Rename a thread once the conversation has a real topic. */

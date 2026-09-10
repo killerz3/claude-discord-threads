@@ -62,6 +62,13 @@ queued → seen(👀) → running(⏳) → delivering → done(✅)
 - On boot the daemon also fetches messages after each channel's stored
   watermark, so messages that arrived while it was down are still answered.
 - Rate-limit errors never drop a turn: it returns to `queued` with backoff.
+- A restart never drops one either. `systemctl restart` sends SIGTERM to the
+  whole cgroup, so a running turn's Claude Code child dies and the SDK throws —
+  which at the catch site looks exactly like a crash. The daemon marks the turn
+  `queued` rather than `failed` for the duration of shutdown, so the next boot
+  replays it instead of losing the reply. A turn that survives
+  `MAX_REPLAY_ATTEMPTS` restarts is dropped, on the theory that by then it is
+  the cause rather than the victim.
 
 ### Signals
 
@@ -170,12 +177,33 @@ answer.
 | `/cost` | what this thread has spent |
 | `/context` | context window used by this conversation |
 | `/model [name]` | show, list or set the model for this thread |
+| `/model global [name]` | the model every new thread starts on |
 | `/permissions [mode]` | show or set the permission mode |
 | `/compact` | summarise the conversation to free up context — **costs tokens** |
 
 | Elsewhere | |
 |---|---|
 | `/threads` | every open thread |
+
+A thread is opened on whichever model `/model global` last named, and says so
+in its first message:
+
+```
+🧠 Model: **Sonnet** (`sonnet`) · change it with `/model <name>`
+```
+
+That banner is edited in place when `/model` changes the thread later, so the
+top of the thread always names the model that is answering in it. The global
+setting is a *starting point*, not a live binding: threads already open keep
+the model they were opened with, so changing it cannot silently move a
+conversation under way onto something else.
+
+**Outside a thread** — in the parent channel, or anywhere with no conversation
+of its own — `/model` *is* `/model global`, since there is no thread model to
+show or set there. That is also the natural place to use it: you set what new
+threads open on, then start one. Commands are dispatched before the daemon
+decides whether to open a thread, so a command in a channel is answered in the
+channel and never spawns one.
 
 `/usage`, `/context` and `/model` read the same structured data as Claude
 Code's own slash commands, through SDK **control requests**: the daemon opens a

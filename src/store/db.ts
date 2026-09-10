@@ -42,6 +42,8 @@ export type ThreadRow = {
   model: string | null
   /** Per-thread permission mode override; null means the daemon default. */
   permission_mode: string | null
+  /** The header message announcing this thread's model, so it can be edited. */
+  header_message_id: string | null
   created_at: number
   last_active_at: number
 }
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS threads (
   state           TEXT NOT NULL DEFAULT 'open',
   model           TEXT,
   permission_mode TEXT,
+  header_message_id TEXT,
   created_at      INTEGER NOT NULL,
   last_active_at  INTEGER NOT NULL
 );
@@ -116,6 +119,15 @@ CREATE TABLE IF NOT EXISTS watermarks (
   updated_at           INTEGER NOT NULL
 );
 
+-- Daemon-wide defaults, e.g. the model new threads start on. A key/value
+-- table rather than a config file: /model has to change it at runtime, and it
+-- must survive a restart alongside the ledger it is read with.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS permissions (
   request_id  TEXT PRIMARY KEY,
   turn_id     INTEGER,
@@ -146,6 +158,7 @@ function migrate(db: Database): void {
   const additions: Array<[string, string, string]> = [
     ['threads', 'model', 'TEXT'],
     ['threads', 'permission_mode', 'TEXT'],
+    ['threads', 'header_message_id', 'TEXT'],
     ['turns', 'cost_usd', 'REAL'],
     ['turns', 'input_tokens', 'INTEGER'],
     ['turns', 'output_tokens', 'INTEGER'],

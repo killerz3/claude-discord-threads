@@ -39,6 +39,12 @@ export function loadEnvFile(): void {
   } catch {}
 }
 
+/**
+ * Where workers run unless a thread overrides it with `/cwd`.
+ */
+export const DEFAULT_CWD =
+  process.env.DISCORD_WORKER_CWD ?? process.env.HOME ?? process.cwd()
+
 /** Discord's hard cap on message length. Sends above this are rejected. */
 export const MAX_CHUNK_LIMIT = 2000
 

@@ -20,6 +20,9 @@ import type { Signals } from '../discord/signals'
 import { sendReply } from '../discord/threads'
 import { MAX_LIVE_WORKERS } from '../config'
 
+/** How many restarts a single turn may be replayed across before it is dropped. */
+const MAX_REPLAY_ATTEMPTS = 3
+
 export type TurnContext = {
   turn: TurnRow
   conversationId: string
@@ -69,6 +72,7 @@ export class Delivery {
   private live = 0
   private waiters: Array<() => void> = []
   private stopped = false
+  private shuttingDown = false
 
   constructor(private deps: DeliveryDeps) {}
 
@@ -133,6 +137,7 @@ export class Delivery {
       }
 
       if (result.kind === 'error') {
+        if (this.shuttingDown) return this.deferForRestart(ctx, result.message)
         repo.failTurn(ctx.turn.id, result.message)
         await this.post(ctx, `❌ ${result.message}`)
         if (msg) await signals.settled(msg, false)
@@ -159,13 +164,49 @@ export class Delivery {
       if (msg) await signals.settled(msg, true)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      repo.failTurn(ctx.turn.id, message)
-      await this.post(ctx, `❌ ${message}`).catch(() => {})
-      if (msg) await signals.settled(msg, false).catch(() => {})
+      if (this.shuttingDown) {
+        this.deferForRestart(ctx, message)
+      } else {
+        repo.failTurn(ctx.turn.id, message)
+        await this.post(ctx, `❌ ${message}`).catch(() => {})
+        if (msg) await signals.settled(msg, false).catch(() => {})
+      }
     } finally {
       if (this.running.get(ctx.conversationId) === abort) this.running.delete(ctx.conversationId)
       this.release()
     }
+  }
+
+  /**
+   * Hand an interrupted turn back to the ledger instead of failing it.
+   *
+   * `queued` is non-terminal, so `recover()` picks it up on the next boot and
+   * the user gets their answer a few seconds late rather than never. Nothing is
+   * posted: an error the operator caused by restarting is noise, and the reply
+   * is still coming.
+   */
+  private deferForRestart(ctx: TurnContext, reason: string): void {
+    // A turn the user cancelled with `/stop` is not owed an answer; replaying
+    // it would resurrect work they explicitly killed.
+    if (ctx.abort?.signal.aborted) {
+      this.deps.repo.failTurn(ctx.turn.id, reason)
+      return
+    }
+    this.deps.repo.requeueTurn(ctx.turn.id, `interrupted by restart: ${reason}`)
+  }
+
+  /**
+   * Announce that the process is going away.
+   *
+   * Distinguishes "the turn failed" from "we killed the turn". Under systemd
+   * the SIGTERM goes to the whole cgroup, so the worker's Claude Code child
+   * dies too and the SDK throws — which is indistinguishable, at the catch
+   * site, from a genuine crash. Without this flag that exception marks the
+   * turn `failed`, a terminal state, and the reply the user was waiting for is
+   * lost across a restart the operator asked for on purpose.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true
   }
 
   /** Cancel the turn running in a conversation. Returns false if none is. */
@@ -198,6 +239,9 @@ export class Delivery {
    * A row in `delivering` is the dangerous case: the model had finished and we
    * were mid-send. If reply ids were recorded the answer is already on Discord
    * and re-running would double-post, so it is reconciled to `done` instead.
+   *
+   * Rows requeued by `beginShutdown` land here too: an operator restart is just
+   * a crash the process saw coming.
    */
   async recover(
     hydrate: (turn: TurnRow) => Promise<TurnContext | null>,
@@ -211,6 +255,13 @@ export class Delivery {
       if (repo.replyIdsOf(turn).length > 0) {
         repo.finishTurn(turn.id, repo.replyIdsOf(turn))
         reconciled++
+        continue
+      }
+      // A turn that has already survived several restarts is more likely to be
+      // the thing killing the process than a victim of it, so stop replaying.
+      if (turn.attempts >= MAX_REPLAY_ATTEMPTS) {
+        repo.failTurn(turn.id, `gave up after ${turn.attempts} restarts`)
+        dropped++
         continue
       }
       const ctx = await hydrate(turn)

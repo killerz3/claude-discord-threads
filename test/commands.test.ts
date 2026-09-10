@@ -33,6 +33,7 @@ function setup(
     state: 'open',
     model: null,
     permission_mode: null,
+    header_message_id: null,
   })
   const client = {
     channels: {
@@ -181,6 +182,7 @@ describe('idle sweep', () => {
       state: 'archived',
       model: null,
       permission_mode: null,
+      header_message_id: null,
     })
 
     // Everything was just created, so nothing is stale yet.
@@ -297,6 +299,7 @@ describe('/threads', () => {
       thread_id: 'thread-9', channel_id: 'chan-1', root_message_id: null,
       guild_id: 'guild-1', cc_session_id: null, cwd: '/home/agent',
       title: null, state: 'open', model: null, permission_mode: null,
+      header_message_id: null,
     })
     const out = await handleCommand('/threads', ctx)
     const reply = out.handled ? out.reply : ''
@@ -346,5 +349,100 @@ describe('compaction reporting', () => {
     expect(text).toContain('5,000')
     expect(text).not.toContain('NaN')
     expect(text).not.toContain('undefined')
+  })
+})
+
+describe('/model global', () => {
+  test('sets the model new threads start on, without moving this thread', async () => {
+    const { ctx, repo } = setup()
+    const out = await handleCommand('/model global sonnet', ctx)
+    const reply = out.handled ? out.reply : ''
+    expect(reply).toContain('sonnet')
+    expect(repo.defaultModel()).toBe('sonnet')
+    // The open thread keeps whatever it was opened with.
+    expect(repo.getThread('thread-1')?.model).toBeNull()
+  }, 30_000)
+
+  test('a new thread inherits the default at the moment it is opened', async () => {
+    const { repo } = setup()
+    repo.setDefaultModel('sonnet')
+    const thread = repo.createThread({
+      thread_id: 'thread-2',
+      channel_id: 'chan-1',
+      root_message_id: null,
+      guild_id: 'guild-1',
+      cc_session_id: null,
+      cwd: '/home/agent',
+      title: null,
+      state: 'open',
+      model: repo.defaultModel(),
+      permission_mode: null,
+      header_message_id: null,
+    })
+    expect(thread.model).toBe('sonnet')
+    // Changing the default afterwards must not move a live conversation.
+    repo.setDefaultModel('haiku')
+    expect(repo.getThread('thread-2')?.model).toBe('sonnet')
+  })
+
+  test('resetting returns new threads to the account default', async () => {
+    const { ctx, repo } = setup()
+    repo.setDefaultModel('sonnet')
+    const out = await handleCommand('/model global default', ctx)
+    expect(out.handled && out.reply).toContain('account default')
+    expect(repo.defaultModel()).toBeNull()
+  })
+
+  test('/model reset falls back to the global default, not past it', async () => {
+    const { ctx, repo } = setup()
+    repo.setDefaultModel('sonnet')
+    repo.setThreadModel('thread-1', 'haiku')
+    await handleCommand('/model reset', ctx)
+    expect(repo.getThread('thread-1')?.model).toBe('sonnet')
+  })
+
+  test('/model reports both the thread model and the default', async () => {
+    const { ctx, repo } = setup()
+    repo.setDefaultModel('sonnet')
+    const out = await handleCommand('/model', ctx)
+    const reply = out.handled ? out.reply : ''
+    expect(reply).toContain('Model for this thread')
+    expect(reply).toContain('New threads start on: **sonnet**')
+  }, 30_000)
+})
+
+describe('/model outside a thread', () => {
+  // The channel a thread is spawned from has no conversation of its own, so
+  // there is no per-thread model there. Before this, `/model` in a channel
+  // answered "no record of this thread yet" — which was both true and useless,
+  // since it is the one place you would want to set what new threads open on.
+  const inChannel = (ctx: ReturnType<typeof setup>['ctx']) => ({
+    ...ctx,
+    conversationId: 'chan-1',
+  })
+
+  test('setting a model in a channel sets what new threads start on', async () => {
+    const { ctx, repo } = setup()
+    const out = await handleCommand('/model sonnet', inChannel(ctx))
+    const reply = out.handled ? out.reply : ''
+    expect(reply).toContain('New threads will start on')
+    expect(repo.defaultModel()).toBe('sonnet')
+    // Answering must not conjure a thread row for a channel.
+    expect(repo.getThread('chan-1')).toBeNull()
+  }, 30_000)
+
+  test('a bare /model in a channel reports the default instead of an error', async () => {
+    const { ctx, repo } = setup()
+    repo.setDefaultModel('sonnet')
+    const out = await handleCommand('/model', inChannel(ctx))
+    const reply = out.handled ? out.reply : ''
+    expect(reply).toContain('New threads start on: **sonnet**')
+    expect(reply).not.toContain('no conversation here yet')
+  }, 30_000)
+
+  test('commands that are genuinely thread-scoped still say so', async () => {
+    const { ctx } = setup()
+    const out = await handleCommand('/cwd', inChannel(ctx))
+    expect(out.handled && out.reply).toContain('no conversation here yet')
   })
 })
