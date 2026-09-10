@@ -1,5 +1,13 @@
 # discord-threads
 
+<p align="center">
+  <img src="docs/cover.jpg" alt="One daemon holds the Discord connection and fans out to an isolated Claude Code session per thread" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://folio.kz3.dev/p/discord-threads"><strong>Documentation</strong></a>
+</p>
+
 A Discord channel for Claude Code where **each conversation is a thread** and
 **delivery is guaranteed by a daemon rather than remembered by the model**.
 
