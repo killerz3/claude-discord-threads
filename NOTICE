@@ -1,0 +1,10 @@
+discord-threads
+
+This product is derived from external_plugins/discord in
+https://github.com/anthropics/claude-plugins-official
+Copyright 2026 Anthropic, PBC
+Licensed under the Apache License, Version 2.0.
+
+The files have been modified. The author of the modifications claims no
+copyright in them; they are offered under the same Apache License, Version
+2.0, as the original.
