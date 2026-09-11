@@ -114,8 +114,19 @@ handler, and attachment download into `inbox/`.
 
 ## Install
 
-Two halves with opposite lifecycles: a skill you install into Claude Code, and a
-daemon that runs on its own.
+**Let an agent do it.** Paste this into Claude Code, or any coding agent with a
+shell on the host, and answer its questions:
+
+```
+Follow the agent.md in https://github.com/killerz3/claude-discord-threads and install and setup
+```
+
+[`AGENT.md`](AGENT.md) walks the agent through every phase, asks only for what
+it cannot know (bot token, channel ID, your Discord user ID), and verifies each
+step before moving on.
+
+**Or by hand.** Two halves with opposite lifecycles: a skill you install into
+Claude Code, and a daemon that runs on its own.
 
 **1. Disable the official plugin.** Leave it on and every Claude Code session
 opens its own gateway login on the same token — the bug this fork exists to fix.
