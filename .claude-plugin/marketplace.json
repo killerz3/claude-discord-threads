@@ -1,5 +1,6 @@
 {
   "name": "claude-discord-threads",
+  "description": "Discord channel for Claude Code, thread-per-conversation, with delivery guaranteed by a daemon.",
   "owner": {
     "name": "killerz3",
     "url": "https://github.com/killerz3"
@@ -10,7 +11,13 @@
       "description": "Discord channel for Claude Code, thread-per-conversation. A daemon owns the gateway and guarantees delivery; each Discord thread is its own Claude Code session.",
       "source": "./",
       "category": "productivity",
-      "keywords": ["discord", "messaging", "channel", "daemon", "threads"]
+      "keywords": [
+        "discord",
+        "messaging",
+        "channel",
+        "daemon",
+        "threads"
+      ]
     }
   ]
 }
