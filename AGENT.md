@@ -10,8 +10,8 @@ no need to ask) or **ASK** (you cannot know the answer; stop and ask the user,
 then continue). Verify every step before moving on. Never invent credentials,
 IDs or tokens. Never print a token back to the user once you have it.
 
-What you are installing: a `systemd --user` daemon that holds one Discord
-gateway connection, opens a Discord thread per conversation, and drives one
+What you are installing: a background daemon (a `systemd --user` unit on
+Linux, a LaunchAgent on macOS) that holds one Discord gateway connection, opens a Discord thread per conversation, and drives one
 Claude Code session per thread. The daemon owns reply delivery, so nothing is
 lost across crashes or restarts.
 
@@ -23,14 +23,15 @@ Check all of these. Fix what you can; ask the user about the rest.
 
 | Requirement | How to check | If missing |
 |---|---|---|
-| Linux host that stays on | `uname -s` → `Linux` | ASK: this daemon cannot run on macOS/Windows or on a laptop that sleeps. Stop. |
-| `systemd --user` | `systemctl --user status` exits 0 | ASK: the host has no user systemd. Offer to run in the foreground only. |
+| A host that stays on | `uname -s` → `Linux` or `Darwin` | Windows: ASK the user to install WSL2 (Ubuntu) and run everything inside it; it has `systemd --user`. Native Windows is not supported. |
+| Linux: `systemd --user` | `systemctl --user status` exits 0 | ASK: the host has no user systemd. Offer to run in the foreground only. |
+| macOS: stays awake and logged in | `pmset -g \| grep -E ' sleep'` | A LaunchAgent runs only in a logged-in session. ASK the user whether you may run `sudo pmset -a sleep 0 disksleep 0` (desktop / Mac mini) and enable automatic login. A laptop with the lid closed will not answer unless it is on power with an external display. |
 | `git` | `git --version` | AUTO: install with the system package manager. |
-| Bun ≥ 1.1 | `~/.bun/bin/bun --version` or `bun --version` | AUTO: `curl -fsSL https://bun.sh/install \| bash`, then re-check. Note the absolute path; the unit file uses `%h/.bun/bin/bun`. |
+| Bun ≥ 1.1 | `~/.bun/bin/bun --version` or `bun --version` | AUTO: `curl -fsSL https://bun.sh/install \| bash`, then re-check. On macOS `brew install oven-sh/bun/bun` is fine too, but then Bun is at `/opt/homebrew/bin/bun`. Note the absolute path; the service files assume `~/.bun/bin/bun`. |
 | Claude Code, authenticated | `claude --version`; then `claude -p "say ok" --max-turns 1` returns text | ASK: the user must log in themselves (`claude` then `/login`) **or** tell you to use an API key. Do not choose for them. If they give an API key, put `ANTHROPIC_API_KEY=…` in the `.env` file from Phase 2, never in the unit file. |
 | Cloudflare / firewall | none | Outbound HTTPS only. No inbound ports are needed. |
 
-Record the Bun path and the user's home directory; you need both later.
+Record the OS, the Bun path and the user's home directory; you need all three later.
 
 ---
 
@@ -179,7 +180,9 @@ confirm a model answer lands with ✅. This costs a few tokens; say so.
 
 ---
 
-## Phase 7 — Install as a service (AUTO)
+## Phase 7 — Install as a service (AUTO; pick the branch for the OS)
+
+### Linux (systemd --user)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -204,6 +207,40 @@ journalctl --user -u discord-threads -n 20 --no-pager | grep 'gateway connected'
 
 If `loginctl enable-linger` needs root and you do not have it, ASK the user to
 run it. Without linger the daemon stops when their last SSH session ends.
+
+### macOS (LaunchAgent)
+
+launchd does not expand `~`, so the plist carries a `__HOME__` placeholder that
+you substitute on copy:
+
+```bash
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+sed "s|__HOME__|$HOME|g" ~/claude-discord-threads/launchd/dev.killerz3.discord-threads.plist \
+  > ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+```
+
+Edit the copied plist **only if** Bun is not at `~/.bun/bin/bun` (first
+`ProgramArguments` entry; Homebrew puts it at `/opt/homebrew/bin/bun`) or the
+checkout is not at `~/claude-discord-threads` (`WorkingDirectory`). Then:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+```
+
+Verify:
+
+```bash
+launchctl print gui/$(id -u)/dev.killerz3.discord-threads | grep -E 'state|pid'   # state = running
+sleep 5; grep 'gateway connected' ~/Library/Logs/discord-threads.log | tail -1
+```
+
+Useful later: `launchctl kickstart -k gui/$(id -u)/dev.killerz3.discord-threads`
+restarts it; `launchctl bootout gui/$(id -u)/dev.killerz3.discord-threads` stops
+and unloads it. It starts again at every login (`RunAtLoad`) and after any
+crash (`KeepAlive`).
+
+The agent runs in the user's login session: if they log out, it stops. Remind
+them of the sleep / auto-login answer from Phase 0.
 
 ---
 
@@ -236,7 +273,9 @@ change nothing.
 | `DISCORD_THREAD_IDLE_MS` | 24 h | "Archive idle threads after how long?" |
 
 Set any changes as `Environment=` lines in the `[Service]` section of the unit
-file (never in `.env` unless it is a secret), then `daemon-reload` and `restart`.
+file on Linux, or as entries in the `EnvironmentVariables` dict of the plist on
+macOS (never in `.env` unless it is a secret). Then reload: `daemon-reload` and
+`restart` on Linux; `bootout` then `bootstrap` on macOS.
 The model for new threads is set from Discord with `/model global <name>`, not
 here.
 
@@ -246,11 +285,11 @@ here.
 
 Tell the user, in this order, without printing any token:
 
-1. The daemon is running as `discord-threads` under their user systemd, and survives reboots if linger is on.
+1. The daemon is running: as `discord-threads` under their user systemd on Linux, surviving reboots if linger is on; or as the `dev.killerz3.discord-threads` LaunchAgent on macOS, starting at every login.
 2. Which channel is opted in, and whether every message or only @mentions start a thread.
 3. Who is allowed (`allowFrom`), and that pairing is off.
 4. The commands they can type in a thread: `/help`, `/status`, `/model`, `/usage`, `/cost`, `/context`, `/permissions`, `/cwd`, `/clear`, `/stop`, `/done`, `/compact`, and `/threads` anywhere.
-5. How to watch it: `journalctl --user -u discord-threads -f`; how to stop it: `systemctl --user stop discord-threads`.
+5. How to watch and stop it. Linux: `journalctl --user -u discord-threads -f` and `systemctl --user stop discord-threads`. macOS: `tail -f ~/Library/Logs/discord-threads.log` and `launchctl bootout gui/$(id -u)/dev.killerz3.discord-threads`.
 6. One warning: never re-enable `discord@claude-plugins-official` while the daemon runs.
 
 ---
@@ -264,13 +303,16 @@ Tell the user, in this order, without printing any token:
 | `~/.claude/channels/discord/threads.db` | thread ↔ session map, turn ledger |
 | `~/.claude/channels/discord/inbox/` | downloaded attachments |
 | `~/.claude/channels/discord/daemon.lock` | single-instance lock |
-| `~/.config/systemd/user/discord-threads.service` | the unit |
+| `~/.config/systemd/user/discord-threads.service` | the unit (Linux) |
+| `~/Library/LaunchAgents/dev.killerz3.discord-threads.plist` | the LaunchAgent (macOS) |
+| `~/Library/Logs/discord-threads.log` | daemon log (macOS; Linux uses the journal) |
 
 Environment variables the daemon reads: `DISCORD_BOT_TOKEN`, `DISCORD_MAX_WORKERS`,
 `DISCORD_PERMISSION_MODE`, `DISCORD_PERMISSION_TIMEOUT_MS`, `DISCORD_THREAD_IDLE_MS`,
 `DISCORD_WORKER_CWD`, `DISCORD_RESPONDER`, `DISCORD_LOG_LEVEL`, `DISCORD_LOG_JSON`,
 `DISCORD_STATE_DIR`, `DISCORD_DB_FILE`, `DISCORD_LOCK_FILE`.
 
-Uninstall: `systemctl --user disable --now discord-threads`, remove the unit,
-remove the checkout. The state directory can stay; it is what the official
+Uninstall: `systemctl --user disable --now discord-threads` and remove the unit
+(Linux), or `launchctl bootout gui/$(id -u)/dev.killerz3.discord-threads` and
+remove the plist (macOS); then remove the checkout. The state directory can stay; it is what the official
 plugin uses too.

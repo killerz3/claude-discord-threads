@@ -9,7 +9,7 @@
 </p>
 
 **Install in one line.** Paste this into Claude Code, or any coding agent with
-a shell on your Linux host, and answer its questions:
+a shell on the machine that will run it (Linux or macOS), and answer its questions:
 
 ```
 Follow the agent.md in https://github.com/killerz3/claude-discord-threads and install and setup
@@ -26,9 +26,10 @@ A Discord channel for Claude Code where **each conversation is a thread** and
 > (Apache-2.0) and now lives in its own repository. See
 > [What changed](#what-changed-vs-the-official-plugin).
 >
-> **Runs on a persistent Linux host.** Unlike the other channel plugins, this one
-> is a long-lived daemon: it needs [Bun](https://bun.sh), `systemd --user`, and a
-> machine that stays on. Claude Code itself is started by the daemon, not the
+> **Runs on a host that stays on.** Unlike the other channel plugins, this one
+> is a long-lived daemon: it needs [Bun](https://bun.sh) and a machine that stays
+> awake, Linux (`systemd --user`) or macOS (a LaunchAgent). Windows works
+> inside WSL2. Claude Code itself is started by the daemon, not the
 > other way round. That is the point, see [Why](#why).
 
 ## Why
@@ -149,8 +150,9 @@ printf 'DISCORD_BOT_TOKEN=%s\n' "$TOKEN" > ~/.claude/channels/discord/.env
 chmod 600 ~/.claude/channels/discord/.env
 ```
 
-**3. Get the code and install dependencies.** The unit file assumes the checkout
-is at `~/claude-discord-threads`; edit `WorkingDirectory` if you put it elsewhere.
+**3. Get the code and install dependencies.** The service files assume the
+checkout is at `~/claude-discord-threads`; edit `WorkingDirectory` if you put it
+elsewhere.
 
 ```bash
 git clone https://github.com/killerz3/claude-discord-threads ~/claude-discord-threads
@@ -165,8 +167,9 @@ bun run src/daemon.ts          # expect "gateway connected as <bot>"
 DISCORD_RESPONDER=echo bun run src/daemon.ts   # pipeline test, no model tokens
 ```
 
-Then install the service (edit the two paths in the unit if your checkout is
-elsewhere):
+Then install the service.
+
+*Linux* (edit the two paths in the unit if your checkout is elsewhere):
 
 ```bash
 cp systemd/discord-threads.service ~/.config/systemd/user/
@@ -176,6 +179,23 @@ journalctl --user -u discord-threads -f
 ```
 
 `loginctl enable-linger $USER` keeps it running when you are logged out.
+
+*macOS* (launchd does not expand `~`, so the plist carries a `__HOME__`
+placeholder; change the Bun path inside it if you installed Bun with Homebrew):
+
+```bash
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+sed "s|__HOME__|$HOME|g" launchd/dev.killerz3.discord-threads.plist \
+  > ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+tail -f ~/Library/Logs/discord-threads.log
+```
+
+It starts at every login and restarts after a crash. `launchctl kickstart -k
+gui/$(id -u)/dev.killerz3.discord-threads` restarts it, `launchctl bootout
+gui/$(id -u)/dev.killerz3.discord-threads` stops it. A LaunchAgent only runs
+while you are logged in, so keep the Mac awake (`sudo pmset -a sleep 0` on a
+desktop) and logged in.
 
 **5. Install the skills into Claude Code**, so `/discord-threads:access` and
 `/discord-threads:configure` are available in your own terminal:

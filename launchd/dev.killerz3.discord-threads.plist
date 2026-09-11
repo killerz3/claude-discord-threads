@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  discord-threads as a macOS LaunchAgent. The systemd unit's twin.
+
+  launchd does not expand ~ or $HOME, so every path is spelled out. Replace
+  __HOME__ with your home directory when you copy it into place:
+
+    sed "s|__HOME__|$HOME|g" launchd/dev.killerz3.discord-threads.plist \
+      > ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.killerz3.discord-threads.plist
+
+  If Bun came from Homebrew rather than the install script, change the first
+  ProgramArguments entry to /opt/homebrew/bin/bun. If the checkout is not at
+  ~/claude-discord-threads, change WorkingDirectory.
+
+  The bot token is read from ~/.claude/channels/discord/.env by the daemon
+  itself, so it is never in this file.
+
+  A LaunchAgent runs in the logged-in user's session, so the Mac has to stay
+  logged in and awake for the bot to answer.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.killerz3.discord-threads</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.bun/bin/bun</string>
+    <string>run</string>
+    <string>src/daemon.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__HOME__/claude-discord-threads</string>
+
+  <!-- launchd gives agents a minimal PATH. Workers run Bash, so give them the
+       same tools an interactive shell would have. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+
+  <!-- Start at login, restart on any exit, five seconds between attempts.
+       Same shape as Restart=always / RestartSec=5 in the systemd unit. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <!-- SIGTERM, then this many seconds before SIGKILL. In-flight turns are on
+       the ledger and replay on the next start, so this is politeness. -->
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/discord-threads.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/discord-threads.log</string>
+</dict>
+</plist>
