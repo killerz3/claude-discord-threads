@@ -8,6 +8,16 @@
   <a href="https://folio.kz3.dev/p/discord-threads"><strong>Documentation</strong></a>
 </p>
 
+**Install in one line.** Paste this into Claude Code, or any coding agent with
+a shell on your Linux host, and answer its questions:
+
+```
+Follow the agent.md in https://github.com/killerz3/claude-discord-threads and install and setup
+```
+
+[`AGENT.md`](AGENT.md) takes it from there. Manual steps are under
+[Install](#install).
+
 A Discord channel for Claude Code where **each conversation is a thread** and
 **delivery is guaranteed by a daemon rather than remembered by the model**.
 
@@ -114,15 +124,9 @@ handler, and attachment download into `inbox/`.
 
 ## Install
 
-**Let an agent do it.** Paste this into Claude Code, or any coding agent with a
-shell on the host, and answer its questions:
-
-```
-Follow the agent.md in https://github.com/killerz3/claude-discord-threads and install and setup
-```
-
-[`AGENT.md`](AGENT.md) walks the agent through every phase, asks only for what
-it cannot know (bot token, channel ID, your Discord user ID), and verifies each
+**Let an agent do it** with the one-line prompt at the top of this README.
+[`AGENT.md`](AGENT.md) walks it through every phase, asks only for what it
+cannot know (bot token, channel ID, your Discord user ID), and verifies each
 step before moving on.
 
 **Or by hand.** Two halves with opposite lifecycles: a skill you install into
