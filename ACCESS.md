@@ -6,7 +6,7 @@ The **Public Bot** toggle in the Developer Portal (Bot tab, on by default) contr
 
 For DMs that do get through, the default policy is **pairing**. An unknown sender gets a 6-character code in reply and their message is dropped. You run `/discord-threads:access pair <code>` from your assistant session to approve them. Once approved, their messages pass through.
 
-All state lives in `~/.claude/channels/discord/access.json`. The `/discord-threads:access` skill commands edit this file; the server re-reads it on every inbound message, so changes take effect without a restart. Set `DISCORD_ACCESS_MODE=static` to pin config to what was on disk at boot (pairing is unavailable in static mode since it requires runtime writes).
+All state lives in `~/.claude/channels/discord/access.json`. The `/discord-threads:access` skill commands edit this file; the server re-reads it on every inbound message, so changes take effect without a restart.
 
 ## At a glance
 
@@ -50,13 +50,33 @@ Guild channels are off by default. Opt each one in individually, keyed on the **
 /discord-threads:access group add 846209781206941736
 ```
 
-With the default `requireMention: true`, the bot responds only when @mentioned or replied to. Pass `--no-mention` to process every message in the channel, or `--allow id1,id2` to restrict which members can trigger it.
+With the default `requireMention: true`, the bot responds only when @mentioned or replied to. Pass `--no-mention` to process every message in the channel.
+
+**Opting a channel in does not open it to the channel's members.** A channel with no `allowFrom` of its own falls back to the top-level `allowFrom` — your own account. Other people in the room can @mention the bot all they like and their messages are dropped. Use `--allow id1,id2` only to name a *different* set of people than your allowlist, and read "Who you are trusting" below before you do.
 
 ```
 /discord-threads:access group add 846209781206941736 --no-mention
 /discord-threads:access group add 846209781206941736 --allow 184695080709324800,221773638772129792
 /discord-threads:access group rm 846209781206941736
 ```
+
+## Who you are trusting
+
+Anyone the gate admits can send prompts to a Claude Code worker that runs **on your machine, as your user account**, in permission mode `auto`. `auto` approves routine tool calls without asking — only calls a classifier judges risky become Discord buttons. So admitting someone is closer to giving them a shell than to giving them a chatbot: they can read your files, run commands, and reach anything your account can reach.
+
+That is the intended design for a personal assistant you reach from your phone. It is why every default here is closed:
+
+| | |
+| --- | --- |
+| Unknown DM senders | Dropped (pairing code only; approval needs your terminal) |
+| Guild channels | Dropped until opted in per channel |
+| An opted-in channel with no `allowFrom` | Falls back to your allowlist — not the room |
+| Approving a permission prompt | Top-level `allowFrom` only, even in a shared channel |
+| `bypassPermissions` | Not reachable from chat at all |
+
+The two settings that can widen this are `--allow` on a channel and adding someone with `access allow`. Neither is reversible in effect: a prompt already run has already run. Treat both as "give this person sudo on my laptop", because that is the size of it.
+
+Separately, Anthropic's Agent SDK terms do not permit offering claude.ai logins or rate limits to third parties without prior approval, so a bot that lets other people send prompts through your subscription is not just risky, it is outside the terms. Keep the allowlist to your own account.
 
 ## Mention detection
 
@@ -83,7 +103,6 @@ Configure outbound behavior with `/discord-threads:access set <key> <value>`.
 /discord-threads:access set ackReaction ""
 ```
 
-**`replyToMode`** controls threading on chunked replies. When a long response is split, `first` (default) threads only the first chunk under the inbound message; `all` threads every chunk; `off` sends all chunks standalone.
 
 **`textChunkLimit`** sets the split threshold. Discord rejects messages over 2000 characters, which is the hard ceiling.
 
@@ -101,7 +120,7 @@ Configure outbound behavior with `/discord-threads:access set <key> <value>`.
 | `/discord-threads:access policy allowlist` | Set `dmPolicy`. Values: `pairing`, `allowlist`, `disabled`. |
 | `/discord-threads:access group add 846209781206941736` | Enable a guild channel. Flags: `--no-mention`, `--allow id1,id2`. |
 | `/discord-threads:access group rm 846209781206941736` | Disable a guild channel. |
-| `/discord-threads:access set ackReaction 🔨` | Set a config key: `ackReaction`, `replyToMode`, `textChunkLimit`, `chunkMode`, `mentionPatterns`. |
+| `/discord-threads:access set ackReaction 🔨` | Set a config key: `ackReaction`, `textChunkLimit`, `chunkMode`, `mentionPatterns`. |
 
 ## Config file
 
@@ -132,7 +151,6 @@ Configure outbound behavior with `/discord-threads:access set <key> <value>`.
   "ackReaction": "👀",
 
   // Threading on chunked replies: first | all | off
-  "replyToMode": "first",
 
   // Split threshold. Discord rejects > 2000.
   "textChunkLimit": 2000,

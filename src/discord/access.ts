@@ -159,10 +159,14 @@ export async function gate(client: Client, msg: Message): Promise<GateResult> {
 
   const policy = access.groups[gateChannelKey(msg)]
   if (!policy) return { action: 'drop' }
-  const groupAllowFrom = policy.allowFrom ?? []
-  if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
-    return { action: 'drop' }
-  }
+  // An empty per-channel allowFrom means "no channel-specific override", not
+  // "anyone in the channel". It falls back to the owner allowlist, because a
+  // worker runs in permissionMode 'auto' on the operator's own machine — so
+  // reaching it is equivalent to a shell there, and a guild channel is a room
+  // whose membership the operator does not control. If neither list names
+  // anyone, nobody is allowed: an unconfigured bot serves no one.
+  const groupAllowFrom = policy.allowFrom?.length ? policy.allowFrom : access.allowFrom
+  if (!groupAllowFrom.includes(senderId)) return { action: 'drop' }
   if ((policy.requireMention ?? true) && !(await isMentioned(client, msg, access.mentionPatterns))) {
     return { action: 'drop' }
   }

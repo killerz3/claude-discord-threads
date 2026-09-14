@@ -330,10 +330,35 @@ State stays where the official plugin puts it, so no migration is needed:
 
 ## Single-user by design
 
-Anthropic's Agent SDK terms do not permit offering claude.ai logins or rate
-limits to third parties without prior approval. A bot that lets *other people*
-send prompts through your subscription is exactly that. Keep `allowFrom` to your
-own account. The access skill will not widen it without an explicit override.
+Anyone the gate admits can send prompts to a Claude Code worker running **on
+your machine, as your user account**, in permission mode `auto` — which
+approves routine tool calls without asking. Admitting someone is therefore much
+closer to giving them a shell than to giving them a chatbot. This is the
+intended shape of a personal assistant you reach from your phone, and it is why
+every default is closed:
+
+- Unknown DM senders get a pairing code and nothing else. Approving one requires
+  you to run `/discord-threads:access pair <code>` **in your terminal** — the
+  skill refuses to do it in response to a Discord message, because that request
+  is exactly what prompt injection looks like.
+- Guild channels are dropped until opted in, one channel ID at a time.
+- An opted-in channel with no `allowFrom` of its own falls back to your
+  allowlist. It does **not** open the bot to everyone in the room, so a channel
+  you opt in is not widened later by whoever else joins it.
+- Permission-prompt buttons and registered slash commands are authority-checked
+  against the top-level `allowFrom`, so a bystander who can see the prompt in a
+  shared channel still cannot answer it.
+- `bypassPermissions` is not reachable from chat at all.
+
+The settings that widen this are `--allow` on a channel and `access allow
+<id>`. Treat both as "give this person sudo on my laptop", because that is the
+size of it.
+
+Beyond the risk, Anthropic's Agent SDK terms do not permit offering claude.ai
+logins or rate limits to third parties without prior approval, and a bot that
+lets *other people* send prompts through your subscription is exactly that. Keep
+`allowFrom` to your own account. The access skill will not widen it without an
+explicit override typed by you.
 
 ## Bot permissions
 

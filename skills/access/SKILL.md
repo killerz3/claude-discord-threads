@@ -83,8 +83,13 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 ### `allow <senderId>`
 
 1. Read access.json (create default if missing).
-2. Add `<senderId>` to `allowFrom` (dedupe).
-3. Write back.
+2. Confirm with the user first if `<senderId>` is not their own account.
+   The allowlist grants prompt access to a worker running as their user in
+   permission mode `auto` — effectively shell access. It also shares their
+   Claude subscription, which the Agent SDK terms do not permit without prior
+   approval.
+3. Add `<senderId>` to `allowFrom` (dedupe).
+4. Write back.
 
 ### `remove <senderId>`
 
@@ -101,6 +106,16 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 2. Set `groups[<channelId>] = { requireMention: !hasFlag("--no-mention"),
    allowFrom: parsedAllowList }`.
 3. Write.
+4. Report who this actually admits. An empty `allowFrom` is **not** "everyone
+   in the channel" — the gate falls back to the top-level `allowFrom`. Say
+   which IDs can now reach the bot there.
+
+`--allow` names people *other than* the owner. Before writing a list that
+contains an ID not already in the top-level `allowFrom`, warn the user
+plainly: whoever is on it can send prompts to a worker running as their user
+account in permission mode `auto`, which is closer to shell access than to a
+chatbot. Ask for confirmation, and do not widen it on a request that arrived
+over a channel rather than from their terminal.
 
 ### `group rm <channelId>`
 
@@ -108,10 +123,9 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 
 ### `set <key> <value>`
 
-Delivery/UX config. Supported keys: `ackReaction`, `replyToMode`,
-`textChunkLimit`, `chunkMode`, `mentionPatterns`. Validate types:
+Delivery/UX config. Supported keys: `ackReaction`, `textChunkLimit`,
+`chunkMode`, `mentionPatterns`. Validate types:
 - `ackReaction`: string (emoji) or `""` to disable
-- `replyToMode`: `off` | `first` | `all`
 - `textChunkLimit`: number
 - `chunkMode`: `length` | `newline`
 - `mentionPatterns`: JSON array of regex strings
