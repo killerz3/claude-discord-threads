@@ -80,10 +80,12 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     let finalText = ''
     let sessionId: string | undefined
     let compaction: Compaction | undefined
+    let lastText = ''
 
     try {
       for await (const message of query({ prompt: ctx.turn.content, options })) {
-        const outcome = consume(message, ctx)
+        const outcome = consume(message, ctx, lastText)
+        if (outcome.assistantText) lastText = outcome.assistantText
         if (outcome.sessionId) sessionId = outcome.sessionId
         if (outcome.compaction) compaction = outcome.compaction
         if (outcome.text !== undefined) finalText = outcome.text
@@ -125,6 +127,8 @@ type Consumed = {
   sessionId?: string
   text?: string
   compaction?: Compaction
+  /** Text of an assistant message, kept in case the final result is empty. */
+  assistantText?: string
   result?: ResponderResult
 }
 
@@ -151,7 +155,7 @@ export function describeCompaction(c: Compaction): string {
   return parts.join(' ')
 }
 
-function consume(message: SDKMessage, ctx: TurnContext): Consumed {
+export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): Consumed {
   if (message.type === 'system' && message.subtype === 'compact_boundary') {
     const meta = message.compact_metadata
     return {
@@ -165,14 +169,17 @@ function consume(message: SDKMessage, ctx: TurnContext): Consumed {
 
   if (message.type === 'assistant') {
     // Surface tool activity as a live status line while the turn runs.
+    const texts: string[] = []
     for (const block of message.message.content) {
       if (typeof block === 'object' && block !== null && 'type' in block) {
         if (block.type === 'tool_use' && 'name' in block) {
           ctx.onToolUse?.(String(block.name))
         }
+        if (block.type === 'text' && 'text' in block) texts.push(String(block.text))
       }
     }
-    return {}
+    const assistantText = texts.join('\n').trim()
+    return assistantText ? { assistantText } : {}
   }
 
   if (message.type !== 'result') return {}
@@ -184,7 +191,10 @@ function consume(message: SDKMessage, ctx: TurnContext): Consumed {
     if (message.api_error_status === 429) {
       return { sessionId, result: { kind: 'retry', afterMs: DEFAULT_RETRY_MS, reason: 'rate limited' } }
     }
-    const text = message.result?.trim()
+    // `result` is only the *last* assistant message. When the model writes its
+    // answer and then ends on a tool call or a thinking-only message, it is
+    // empty even though the answer exists; post the last text instead.
+    const text = message.result?.trim() || lastText
     if (!text) {
       return { sessionId, result: { kind: 'error', message: 'the model produced no reply' } }
     }
