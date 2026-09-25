@@ -37,6 +37,8 @@ export type TurnContext = {
   /** Aborted by `/stop`. The worker passes it to the SDK. */
   abort?: AbortController
   onToolUse?: (label: string) => void
+  /** Posts an answer the model gives after its turn, when background work finishes. */
+  onLateReply?: (text: string) => Promise<void>
 }
 
 export type ResponderResult =
@@ -126,7 +128,12 @@ export class Delivery {
       repo.setTurnState(ctx.turn.id, 'running')
       if (msg) void signals.working(msg)
 
-      const result = await this.deps.responder({ ...ctx, turn: fresh, abort })
+      const onLateReply = (text: string) =>
+        this.post(ctx, text).then(
+          () => {},
+          err => void process.stderr.write(`discord-threads: late reply for turn ${ctx.turn.id} failed: ${err}\n`),
+        )
+      const result = await this.deps.responder({ ...ctx, turn: fresh, abort, onLateReply })
 
       if (result.kind === 'retry') {
         // Not a failure: the obligation stands, so put it back on the queue.

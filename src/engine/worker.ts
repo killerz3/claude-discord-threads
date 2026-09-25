@@ -14,7 +14,7 @@
  * SDK signatures are pinned in docs/sdk-notes.md against the shipped .d.ts.
  */
 
-import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Responder, ResponderResult, TurnContext } from './delivery'
 
 /** Retry ceiling when Discord gives us no better hint. */
@@ -55,9 +55,51 @@ export type WorkerOptions = {
   canUseToolFor?: (ctx: TurnContext) => Options['canUseTool']
 }
 
+/**
+ * How long a session may stay open after its last answer while background work
+ * is still running. When it runs out the input closes, which kills the tasks.
+ */
+const BACKGROUND_HOLD_MS = Number(process.env.DISCORD_BACKGROUND_HOLD_MS ?? 2 * 60 * 60 * 1000)
+
+/**
+ * A session kept open after its turn because background work is still running.
+ *
+ * With a one-shot prompt the CLI kills background tasks (a `run_in_background`
+ * command, a subagent, a Monitor) a few seconds after the result, so "I'll get
+ * back to you when it's done" never happened. Keeping the input open lets the
+ * task finish and wake the model; that later answer is posted to the thread.
+ * New messages in the thread go into the same session instead of a second one.
+ */
+type LiveSession = {
+  /** The turn the next result belongs to. Swapped as new turns arrive. */
+  ctx: TurnContext
+  push: (content: string) => void
+  close: () => void
+  waiter?: (r: ResponderResult) => void
+  /** Non-ambient background tasks still running. */
+  tasks: number
+  hold?: ReturnType<typeof setTimeout>
+}
+
 export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
+  const live = new Map<string, LiveSession>()
+
   return async (ctx: TurnContext): Promise<ResponderResult> => {
-    const canUseTool = workerOpts.canUseToolFor?.(ctx)
+    const existing = live.get(ctx.conversationId)
+    if (existing) {
+      clearTimeout(existing.hold)
+      existing.ctx = ctx
+      const reply = new Promise<ResponderResult>(r => (existing.waiter = r))
+      existing.push(ctx.turn.content)
+      return reply
+    }
+
+    // Closing over `session.ctx` rather than `ctx` keeps permission prompts
+    // on the turn that is running now, not the one that opened the session.
+    const canUseTool: Options['canUseTool'] | undefined = workerOpts.canUseToolFor
+      ? (...args) => workerOpts.canUseToolFor!(session.ctx)!(...args)
+      : undefined
+    const abort = new AbortController()
     const options: Options = {
       cwd: ctx.cwd,
       // Keep Claude Code's own system prompt and append to it, rather than
@@ -71,52 +113,139 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       permissionMode: (ctx.permissionMode ??
         workerOpts.permissionMode ??
         DEFAULT_PERMISSION_MODE) as NonNullable<Options['permissionMode']>,
-      ...(ctx.abort ? { abortController: ctx.abort } : {}),
+      abortController: abort,
       ...(ctx.sessionId ? { resume: ctx.sessionId } : {}),
       ...(ctx.model ?? workerOpts.model ? { model: ctx.model ?? workerOpts.model } : {}),
       ...(canUseTool ? { canUseTool, permissionPrompts: 'host' as const } : {}),
     }
 
-    let finalText = ''
-    let sessionId: string | undefined
-    let compaction: Compaction | undefined
-
-    try {
-      for await (const message of query({ prompt: ctx.turn.content, options })) {
-        const outcome = consume(message, ctx)
-        if (outcome.sessionId) sessionId = outcome.sessionId
-        if (outcome.compaction) compaction = outcome.compaction
-        if (outcome.text !== undefined) finalText = outcome.text
-        if (outcome.result) {
-          // A command that succeeded silently is not a failure.
-          if (outcome.result.kind === 'error' && compaction) {
-            return { kind: 'reply', text: describeCompaction(compaction), sessionId }
-          }
-          // Only a reply carries a session id; retry/error results have no
-          // room for one, and the id is already persisted by then anyway.
-          return outcome.result.kind === 'reply'
-            ? { ...outcome.result, sessionId: sessionId ?? outcome.result.sessionId }
-            : outcome.result
-        }
-      }
-    } catch (err) {
-      const retry = retryAfterFrom(err)
-      if (retry !== null) {
-        return { kind: 'retry', afterMs: retry, reason: 'rate limited' }
-      }
-      // An abort is /stop, not a crash: say so plainly.
-      if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.' }
-      return { kind: 'error', message: describe(err) }
+    const inbox = new Inbox()
+    const session: LiveSession = {
+      ctx,
+      push: content => inbox.push(content),
+      close: () => inbox.close(),
+      tasks: 0,
     }
-
-    // The stream ended without a result message — treat as a failure rather
-    // than posting nothing, so the turn is visibly settled either way.
-    if (!finalText.trim()) {
-      if (compaction) return { kind: 'reply', text: describeCompaction(compaction), sessionId }
-      return { kind: 'error', message: 'the model produced no reply' }
-    }
-    return { kind: 'reply', text: finalText, sessionId }
+    live.set(ctx.conversationId, session)
+    const reply = new Promise<ResponderResult>(r => (session.waiter = r))
+    inbox.push(ctx.turn.content)
+    void pump(session, query({ prompt: inbox.messages(), options }), abort).finally(() => {
+      clearTimeout(session.hold)
+      if (live.get(ctx.conversationId) === session) live.delete(ctx.conversationId)
+    })
+    return reply
   }
+}
+
+/** The session's input: user messages in, closed when nothing more is owed. */
+class Inbox {
+  private queue: string[] = []
+  private wake?: () => void
+  private closed = false
+
+  push(content: string): void {
+    this.queue.push(content)
+    this.wake?.()
+  }
+
+  close(): void {
+    this.closed = true
+    this.wake?.()
+  }
+
+  async *messages(): AsyncGenerator<SDKUserMessage> {
+    while (true) {
+      const content = this.queue.shift()
+      if (content !== undefined) {
+        yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null }
+        continue
+      }
+      if (this.closed) return
+      await new Promise<void>(r => (this.wake = r))
+      this.wake = undefined
+    }
+  }
+}
+
+/** Read the session until it ends, handing each result to its turn. */
+async function pump(
+  session: LiveSession,
+  stream: AsyncIterable<SDKMessage>,
+  abort: AbortController,
+): Promise<void> {
+  // /stop aborts the turn's own controller; forward it to the session.
+  const forward = () => abort.abort()
+  let linked = session.ctx.abort
+  linked?.signal.addEventListener('abort', forward)
+
+  let lastText = ''
+  let sessionId: string | undefined
+  let compaction: Compaction | undefined
+
+  const settle = (result: ResponderResult) => {
+    const waiter = session.waiter
+    session.waiter = undefined
+    if (waiter) return waiter(result)
+    // Nobody is waiting: this is the model waking up after background work.
+    const text = result.kind === 'reply' ? result.text : result.kind === 'error' ? `❌ ${result.message}` : ''
+    if (text) void session.ctx.onLateReply?.(text)
+  }
+
+  try {
+    for await (const message of stream) {
+      if (session.ctx.abort !== linked) {
+        linked?.signal.removeEventListener('abort', forward)
+        linked = session.ctx.abort
+        linked?.signal.addEventListener('abort', forward)
+      }
+      if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+        session.tasks = message.tasks.filter(t => !t.ambient).length
+        continue
+      }
+
+      const outcome = consume(message, session.ctx, lastText)
+      if (outcome.assistantText) lastText = outcome.assistantText
+      if (outcome.sessionId) sessionId = outcome.sessionId
+      if (outcome.compaction) compaction = outcome.compaction
+      if (!outcome.result) continue
+
+      const result = outcome.result
+      // A command that succeeded silently is not a failure.
+      if (result.kind === 'error' && compaction) {
+        settle({ kind: 'reply', text: describeCompaction(compaction), sessionId })
+      } else {
+        // Only a reply carries a session id; retry/error results have no
+        // room for one, and the id is already persisted by then anyway.
+        settle(result.kind === 'reply' ? { ...result, sessionId: sessionId ?? result.sessionId } : result)
+      }
+      lastText = ''
+      compaction = undefined
+
+      if (session.tasks === 0) {
+        session.close()
+      } else {
+        session.hold = setTimeout(() => {
+          if (session.waiter) return
+          void session.ctx.onLateReply?.(
+            `⏹️ Stopped waiting on background work after ${Math.round(BACKGROUND_HOLD_MS / 60000)} min.`,
+          )
+          session.close()
+        }, BACKGROUND_HOLD_MS)
+      }
+    }
+  } catch (err) {
+    const retry = retryAfterFrom(err)
+    if (retry !== null) return settle({ kind: 'retry', afterMs: retry, reason: 'rate limited' })
+    // An abort is /stop, not a crash: say so plainly.
+    if (abort.signal.aborted) return settle({ kind: 'error', message: 'Stopped.' })
+    return settle({ kind: 'error', message: describe(err) })
+  } finally {
+    linked?.signal.removeEventListener('abort', forward)
+  }
+
+  // The stream ended without a result for the waiting turn — treat as a
+  // failure rather than posting nothing, so the turn is visibly settled.
+  if (session.waiter) settle({ kind: 'error', message: 'the model produced no reply' })
 }
 
 export type Compaction = { preTokens: number; postTokens?: number; durationMs?: number }
@@ -125,6 +254,8 @@ type Consumed = {
   sessionId?: string
   text?: string
   compaction?: Compaction
+  /** Text of an assistant message, kept in case the final result is empty. */
+  assistantText?: string
   result?: ResponderResult
 }
 
@@ -151,7 +282,7 @@ export function describeCompaction(c: Compaction): string {
   return parts.join(' ')
 }
 
-function consume(message: SDKMessage, ctx: TurnContext): Consumed {
+export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): Consumed {
   if (message.type === 'system' && message.subtype === 'compact_boundary') {
     const meta = message.compact_metadata
     return {
@@ -165,14 +296,17 @@ function consume(message: SDKMessage, ctx: TurnContext): Consumed {
 
   if (message.type === 'assistant') {
     // Surface tool activity as a live status line while the turn runs.
+    const texts: string[] = []
     for (const block of message.message.content) {
       if (typeof block === 'object' && block !== null && 'type' in block) {
         if (block.type === 'tool_use' && 'name' in block) {
           ctx.onToolUse?.(String(block.name))
         }
+        if (block.type === 'text' && 'text' in block) texts.push(String(block.text))
       }
     }
-    return {}
+    const assistantText = texts.join('\n').trim()
+    return assistantText ? { assistantText } : {}
   }
 
   if (message.type !== 'result') return {}
@@ -184,7 +318,10 @@ function consume(message: SDKMessage, ctx: TurnContext): Consumed {
     if (message.api_error_status === 429) {
       return { sessionId, result: { kind: 'retry', afterMs: DEFAULT_RETRY_MS, reason: 'rate limited' } }
     }
-    const text = message.result?.trim()
+    // `result` is only the *last* assistant message. When the model writes its
+    // answer and then ends on a tool call or a thinking-only message, it is
+    // empty even though the answer exists; post the last text instead.
+    const text = message.result?.trim() || lastText
     if (!text) {
       return { sessionId, result: { kind: 'error', message: 'the model produced no reply' } }
     }
