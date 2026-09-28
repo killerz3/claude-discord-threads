@@ -14,11 +14,17 @@
  * SDK signatures are pinned in docs/sdk-notes.md against the shipped .d.ts.
  */
 
-import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Responder, ResponderResult, TurnContext } from './delivery'
 
 /** Retry ceiling when Discord gives us no better hint. */
 const DEFAULT_RETRY_MS = 60_000
+
+/**
+ * How long a turn may stay open waiting on background agents it launched.
+ * Past this the input is closed, which kills whatever is still running.
+ */
+const BACKGROUND_WAIT_MS = 2 * 60 * 60_000
 
 /**
  * Extra guidance for the worker. It is short on purpose: the delivery contract
@@ -80,17 +86,54 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     let finalText = ''
     let sessionId: string | undefined
     let compaction: Compaction | undefined
+    // Non-ambient background tasks, replaced wholesale on every
+    // background_tasks_changed. Checked only when a result arrives: the level
+    // can flicker to empty mid-turn while a subagent is resumed.
+    let liveTasks = 0
+    let interimPosted = false
+    let timedOut = false
+
+    // Streaming input, held open until the turn is truly finished. A string
+    // prompt closes stdin, and the CLI kills background agents when a
+    // closed-input run releases its result — so the model would promise to
+    // report back from agents that were already dead.
+    const input = openInput(ctx.turn.content)
+    const timer = setTimeout(() => {
+      timedOut = true
+      input.close()
+    }, BACKGROUND_WAIT_MS)
+    ctx.abort?.signal.addEventListener('abort', () => input.close(), { once: true })
 
     try {
-      for await (const message of query({ prompt: ctx.turn.content, options })) {
+      for await (const message of query({ prompt: input.stream, options })) {
+        if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+          liveTasks = message.tasks.filter(t => !t.ambient).length
+          continue
+        }
         const outcome = consume(message, ctx)
         if (outcome.sessionId) sessionId = outcome.sessionId
         if (outcome.compaction) compaction = outcome.compaction
         if (outcome.text !== undefined) finalText = outcome.text
         if (outcome.result) {
+          // Background work is still running: post what the model said so far
+          // and keep the session open. Each finished task wakes the model,
+          // which produces another result; the last one is the real reply.
+          if (liveTasks > 0 && outcome.result.kind !== 'retry') {
+            if (outcome.result.kind === 'reply') {
+              await ctx.onInterim?.(outcome.result.text).catch(() => {})
+              interimPosted = true
+            }
+            finalText = ''
+            continue
+          }
           // A command that succeeded silently is not a failure.
           if (outcome.result.kind === 'error' && compaction) {
             return { kind: 'reply', text: describeCompaction(compaction), sessionId }
+          }
+          // A wake-up turn that ends silently after an interim was posted
+          // has nothing left to add; that is not a failure either.
+          if (outcome.result.kind === 'error' && interimPosted && !ctx.abort?.signal.aborted) {
+            return { kind: 'reply', text: 'Background work finished.', sessionId }
           }
           // Only a reply carries a session id; retry/error results have no
           // room for one, and the id is already persisted by then anyway.
@@ -107,6 +150,17 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       // An abort is /stop, not a crash: say so plainly.
       if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.' }
       return { kind: 'error', message: describe(err) }
+    } finally {
+      clearTimeout(timer)
+      input.close()
+    }
+
+    if (timedOut) {
+      return {
+        kind: 'reply',
+        text: `⏱️ Stopped waiting on background work after ${BACKGROUND_WAIT_MS / 3_600_000}h; it was cancelled.`,
+        sessionId,
+      }
     }
 
     // The stream ended without a result message — treat as a failure rather
@@ -117,6 +171,20 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     }
     return { kind: 'reply', text: finalText, sessionId }
   }
+}
+
+/**
+ * A one-message prompt stream that stays open until `close()`. Closing ends
+ * stdin, which lets the CLI exit once its current work settles.
+ */
+export function openInput(content: string): { stream: AsyncIterable<SDKUserMessage>; close: () => void } {
+  let close!: () => void
+  const closed = new Promise<void>(resolve => (close = resolve))
+  async function* stream(): AsyncIterable<SDKUserMessage> {
+    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content } }
+    await closed
+  }
+  return { stream: stream(), close }
 }
 
 export type Compaction = { preTokens: number; postTokens?: number; durationMs?: number }

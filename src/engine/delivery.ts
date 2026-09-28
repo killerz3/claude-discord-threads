@@ -37,6 +37,11 @@ export type TurnContext = {
   /** Aborted by `/stop`. The worker passes it to the SDK. */
   abort?: AbortController
   onToolUse?: (label: string) => void
+  /**
+   * Posts an interim answer while background agents keep the turn open.
+   * Best effort and outside the ledger: a crash replays the turn in full.
+   */
+  onInterim?: (text: string) => Promise<void>
 }
 
 export type ResponderResult =
@@ -126,7 +131,14 @@ export class Delivery {
       repo.setTurnState(ctx.turn.id, 'running')
       if (msg) void signals.working(msg)
 
-      const result = await this.deps.responder({ ...ctx, turn: fresh, abort })
+      const result = await this.deps.responder({
+        ...ctx,
+        turn: fresh,
+        abort,
+        onInterim: async text => {
+          await this.post(ctx, text)
+        },
+      })
 
       if (result.kind === 'retry') {
         // Not a failure: the obligation stands, so put it back on the queue.
