@@ -110,3 +110,22 @@ does not model a budget; it reacts: on `api_error_status === 429` it honours
 `retry-after`, returns the turn to `queued`, and posts a retry notice into the
 thread. `MAX_LIVE_WORKERS` exists to stop a burst of Discord threads from
 starving the operator's own interactive sessions of the same quota.
+
+## Background agents
+
+A string `prompt` closes stdin, and the CLI kills background tasks when a
+closed-input run releases its result. The worker therefore always passes an
+`AsyncIterable` that yields the one user message and stays open.
+
+```ts
+type SDKBackgroundTasksChangedMessage = {
+  type: 'system'
+  subtype: 'background_tasks_changed'
+  tasks: { task_id: string; task_type: string; description: string; ambient?: boolean }[]
+}
+```
+
+A level signal with replace semantics. On each `result`, a non-empty
+non-ambient set means the model will be woken again by a task notification:
+the text is posted as an interim reply and the stream is read on. The first
+`result` with an empty set is the final reply, and then the input is closed.
