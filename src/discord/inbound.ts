@@ -15,7 +15,7 @@ import { log, describeError } from '../log'
 const MAX_ATTACHMENTS = 10
 
 export async function composeTurnContent(msg: Message): Promise<string> {
-  const text = msg.content.trim()
+  const text = (await quotedReply(msg)) + msg.content.trim()
   if (msg.attachments.size === 0) return text
 
   const attachments = [...msg.attachments.values()].slice(0, MAX_ATTACHMENTS)
@@ -45,4 +45,20 @@ export async function composeTurnContent(msg: Message): Promise<string> {
     'Files attached to this Discord message, already saved locally — read them if relevant:',
     ...lines,
   ].join('\n')
+}
+
+/**
+ * A Discord reply carries only a pointer to the message it quotes, so without
+ * this the model sees "yes, do that" with no idea what "that" is.
+ */
+async function quotedReply(msg: Message): Promise<string> {
+  if (!msg.reference?.messageId) return ''
+  try {
+    const ref = await msg.fetchReference()
+    const quoted = ref.content.trim() || '(no text)'
+    return `Replying to ${ref.author.username}:\n${quoted.replace(/^/gm, '> ')}\n\n`
+  } catch (err) {
+    log.warn('reply reference fetch failed', { error: describeError(err) })
+    return ''
+  }
 }
