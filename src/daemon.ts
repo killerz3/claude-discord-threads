@@ -370,7 +370,7 @@ async function replayBacklog(): Promise<number> {
       const missed = await ch.messages.fetch({ after, limit: 50 })
       // fetch() returns newest-first; process oldest-first so threads read right.
       for (const msg of [...missed.values()].reverse()) {
-        if (msg.author.bot) continue
+        if (msg.author.bot || msg.system) continue
         await handleInbound(msg)
         queued++
       }
@@ -382,7 +382,7 @@ async function replayBacklog(): Promise<number> {
 }
 
 client.on('messageCreate', msg => {
-  if (msg.author.bot) return
+  if (msg.author.bot || msg.system) return
   handleInbound(msg).catch(err =>
     log.error('handleInbound failed', { message: msg.id, error: describeError(err) }),
   )
