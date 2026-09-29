@@ -28,6 +28,28 @@ describe('plain messages', () => {
   })
 })
 
+describe('replies', () => {
+  test('the quoted message is prepended so "that" has a referent', async () => {
+    const msg = {
+      ...msgWith('yes do that'),
+      reference: { messageId: '9' },
+      fetchReference: async () => ({ content: 'Shall I restart it?\nIt is idle.', author: { username: 'Claude' } }),
+    } as unknown as Message
+    expect(await composeTurnContent(msg)).toBe(
+      'Replying to Claude:\n> Shall I restart it?\n> It is idle.\n\nyes do that',
+    )
+  })
+
+  test('a deleted original does not drop the reply', async () => {
+    const msg = {
+      ...msgWith('yes'),
+      reference: { messageId: '9' },
+      fetchReference: async () => { throw new Error('Unknown Message') },
+    } as unknown as Message
+    expect(await composeTurnContent(msg)).toBe('yes')
+  })
+})
+
 describe('attachments', () => {
   test('a failed download is reported inline instead of silently dropped', async () => {
     // Port 1 refuses immediately, so this exercises the failure branch without
