@@ -136,6 +136,10 @@ export class Repo {
     this.db.run("UPDATE threads SET state = 'archived' WHERE thread_id = ?", [threadId])
   }
 
+  reopenThread(threadId: string): void {
+    this.db.run("UPDATE threads SET state = 'open' WHERE thread_id = ?", [threadId])
+  }
+
   touchThread(threadId: string): void {
     this.db.run('UPDATE threads SET last_active_at = ? WHERE thread_id = ?', [
       Date.now(),
@@ -143,20 +147,6 @@ export class Repo {
     ])
   }
 
-  /**
-   * Open threads with no activity since `before`. Drives idle archiving, and
-   * is ordered oldest-first so a sweep that hits a rate limit makes progress
-   * on the stalest ones.
-   */
-  idleThreads(before: number): ThreadRow[] {
-    return this.db
-      .query<ThreadRow, [number]>(
-        `SELECT * FROM threads
-         WHERE state = 'open' AND last_active_at < ?
-         ORDER BY last_active_at ASC`,
-      )
-      .all(before)
-  }
 
   // ---- turns ------------------------------------------------------------
 

@@ -228,7 +228,7 @@ answer.
 | `/cwd [path]` | show or change this thread's working directory |
 | `/clear` | forget the conversation, keep the thread |
 | `/stop` | cancel the turn that is running |
-| `/done` | archive the thread |
+| `/done` | archive the thread; until then it stays open (Discord auto-archives are undone) |
 
 | Claude | |
 |---|---|
@@ -307,7 +307,6 @@ Environment variables, all optional:
 | `DISCORD_MAX_WORKERS` | concurrent turns (default 3) |
 | `DISCORD_PERMISSION_MODE` | worker permission mode (default `auto`) |
 | `DISCORD_PERMISSION_TIMEOUT_MS` | how long a prompt waits for a button (default 5 min) |
-| `DISCORD_THREAD_IDLE_MS` | archive a thread after this long idle (default 24h) |
 | `DISCORD_WORKER_CWD` | default working directory for new threads |
 | `DISCORD_RESPONDER=echo` | echo instead of calling the model |
 | `DISCORD_LOG_LEVEL` / `DISCORD_LOG_JSON` | `debug`–`error`; `1` for JSON lines |

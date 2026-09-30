@@ -15,6 +15,7 @@ import type { Client } from 'discord.js'
 import { openDb } from '../src/store/db'
 import { Repo } from '../src/store/repo'
 import { handleCommand } from '../src/discord/commands'
+import { keepThreadsOpen } from '../src/discord/threads'
 import { consume, describeCompaction } from '../src/engine/worker'
 
 function setup(
@@ -141,7 +142,7 @@ describe('/done', () => {
 
     const out = await handleCommand('/done', ctx)
 
-    // The ledger still records intent, so the idle sweep will not keep retrying
+    // The ledger still records intent, so the keep-open sweep will not reopen
     // a thread the user has finished with.
     expect(repo.getThread('thread-1')!.state).toBe('archived')
     expect(out.handled && out.reply).toContain('Manage Threads')
@@ -168,28 +169,32 @@ describe('/status', () => {
   })
 })
 
-describe('idle sweep', () => {
-  test('only open threads past the cutoff are returned, oldest first', () => {
+describe('keep threads open', () => {
+  test('unarchives open threads, marks locked ones done, leaves /done ones', async () => {
     const { repo } = setup()
-    repo.createThread({
-      thread_id: 'thread-2',
-      channel_id: 'chan-1',
-      root_message_id: null,
-      guild_id: 'guild-1',
-      cc_session_id: null,
-      cwd: '/home/agent',
-      title: null,
-      state: 'archived',
-      model: null,
-      permission_mode: null,
-      header_message_id: null,
-    })
+    const base = { channel_id: 'chan-1', root_message_id: null, guild_id: 'guild-1',
+      cc_session_id: null, cwd: '/home/agent', title: null, model: null,
+      permission_mode: null, header_message_id: null }
+    repo.createThread({ ...base, thread_id: 'locked', state: 'open' })
+    repo.createThread({ ...base, thread_id: 'done', state: 'archived' })
+    const unarchived: string[] = []
+    const client = {
+      channels: {
+        fetch: async (id: string) => ({
+          isThread: () => true,
+          archived: true,
+          locked: id === 'locked',
+          setArchived: async (v: boolean) => { if (!v) unarchived.push(id) },
+        }),
+      },
+    } as unknown as Client
 
-    // Everything was just created, so nothing is stale yet.
-    expect(repo.idleThreads(Date.now() - 60_000)).toHaveLength(0)
-    // With a cutoff in the future, only the open thread qualifies.
-    const stale = repo.idleThreads(Date.now() + 60_000)
-    expect(stale.map(t => t.thread_id)).toEqual(['thread-1'])
+    await keepThreadsOpen(client, repo)
+    expect(unarchived).toEqual(['thread-1'])
+    expect(repo.getThread('locked')?.state).toBe('archived')
+
+    repo.reopenThread('done')
+    expect(repo.getThread('done')?.state).toBe('open')
   })
 })
 

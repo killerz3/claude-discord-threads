@@ -9,11 +9,10 @@
 
 import { Client, GatewayIntentBits, Partials, ChannelType, type Message } from 'discord.js'
 import {
-  ARCHIVE_SWEEP_MS,
   DEFAULT_CWD,
+  KEEP_OPEN_SWEEP_MS,
   loadEnvFile,
   MAX_LIVE_WORKERS,
-  THREAD_IDLE_MS,
 } from './config'
 import { openDb, type TurnRow } from './store/db'
 import { Repo } from './store/repo'
@@ -21,6 +20,7 @@ import { gate, loadAccess, noteSent, watchApprovals } from './discord/access'
 import { Signals } from './discord/signals'
 import {
   fetchSendable,
+  keepThreadsOpen,
   resolveConversation,
   renameThread,
   syncModelHeader,
@@ -161,6 +161,8 @@ async function handleInbound(msg: Message): Promise<void> {
 
   const convo = await resolveConversation(msg, repo)
   const existing = repo.getThread(convo.id)
+  // Posting after `/done` reopens the conversation, so it stays open again.
+  if (existing?.state === 'archived') repo.reopenThread(convo.id)
   const thread =
     existing ??
     repo.createThread({
@@ -237,30 +239,6 @@ async function titleThread(conversationId: string, seed: string): Promise<void> 
     repo.setThreadTitle(conversationId, seed.slice(0, 200))
   } catch {
     // Renaming needs MANAGE_THREADS unless we own the thread. Cosmetic.
-  }
-}
-
-/**
- * Archive threads nobody has touched in a while. Nothing is lost: the ledger
- * keeps the session id, and posting in an archived thread reopens it.
- */
-async function sweepIdleThreads(): Promise<void> {
-  const stale = repo.idleThreads(Date.now() - THREAD_IDLE_MS)
-  for (const thread of stale) {
-    if (thread.guild_id === null) continue // DMs have no threads to archive
-    try {
-      const ch = await client.channels.fetch(thread.thread_id)
-      if (ch?.isThread() && !ch.archived) await ch.setArchived(true)
-      repo.archiveThread(thread.thread_id)
-      log.info('archived idle thread', { thread: thread.thread_id })
-    } catch (err) {
-      // Archiving needs MANAGE_THREADS. Without it this is a no-op every
-      // sweep, so log once per thread at debug rather than warning loudly.
-      log.debug('could not archive thread', {
-        thread: thread.thread_id,
-        error: describeError(err),
-      })
-    }
   }
 }
 
@@ -413,7 +391,8 @@ client.once('clientReady', async c => {
     enqueueTurn: enqueueSyntheticTurn,
   })
   await registerGuildCommands(client, await guildIdsForOptedInChannels())
-  const sweep = setInterval(() => void sweepIdleThreads(), ARCHIVE_SWEEP_MS)
+  void keepThreadsOpen(client, repo)
+  const sweep = setInterval(() => void keepThreadsOpen(client, repo), KEEP_OPEN_SWEEP_MS)
   if (typeof sweep === 'object' && 'unref' in sweep) sweep.unref()
   const recovered = await delivery.recover(hydrate)
   const replayed = await replayBacklog()

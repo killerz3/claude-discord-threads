@@ -65,7 +65,7 @@ export async function resolveConversation(msg: Message, repo: Repo): Promise<Con
   try {
     const thread = await msg.startThread({
       name: threadName(msg.content),
-      autoArchiveDuration: 1440,
+      autoArchiveDuration: 10080,
     })
     noteSent(thread.id)
     return {
@@ -230,4 +230,23 @@ export function isTextChannel(ch: unknown): ch is TextChannel {
     'type' in ch &&
     (ch as { type: unknown }).type === ChannelType.GuildText
   )
+}
+
+/**
+ * Unarchive threads the ledger still has open. Discord auto-archives after at
+ * most a week idle; a thread should stay until `/done`. A locked thread was
+ * closed by hand, so it is marked done instead.
+ */
+export async function keepThreadsOpen(client: Client, repo: Repo): Promise<void> {
+  for (const row of repo.openThreads()) {
+    if (row.guild_id === null) continue // DMs have no threads
+    try {
+      const ch = await client.channels.fetch(row.thread_id)
+      if (!ch?.isThread() || !ch.archived) continue
+      if (ch.locked) repo.archiveThread(row.thread_id)
+      else await ch.setArchived(false)
+    } catch {
+      // Deleted thread or missing MANAGE_THREADS; next sweep retries.
+    }
+  }
 }
