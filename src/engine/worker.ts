@@ -121,6 +121,9 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       permissionMode: (ctx.permissionMode ??
         workerOpts.permissionMode ??
         DEFAULT_PERMISSION_MODE) as NonNullable<Options['permissionMode']>,
+      // The SDK refuses bypassPermissions without this flag.
+      allowDangerouslySkipPermissions:
+        (ctx.permissionMode ?? workerOpts.permissionMode ?? DEFAULT_PERMISSION_MODE) === 'bypassPermissions',
       abortController: abort,
       ...(ctx.sessionId ? { resume: ctx.sessionId } : {}),
       ...(ctx.model ?? workerOpts.model ? { model: ctx.model ?? workerOpts.model } : {}),

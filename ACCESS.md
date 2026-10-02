@@ -72,7 +72,7 @@ That is the intended design for a personal assistant you reach from your phone. 
 | Guild channels | Dropped until opted in per channel |
 | An opted-in channel with no `allowFrom` | Falls back to your allowlist — not the room |
 | Approving a permission prompt | Top-level `allowFrom` only, even in a shared channel |
-| `bypassPermissions` | Not reachable from chat at all |
+| `bypassPermissions` | Per thread via `/permissions`, by anyone the gate admits |
 
 The two settings that can widen this are `--allow` on a channel and adding someone with `access allow`. Neither is reversible in effect: a prompt already run has already run. Treat both as "give this person sudo on my laptop", because that is the size of it.
 

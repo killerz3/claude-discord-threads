@@ -282,9 +282,8 @@ command that worked, so the daemon reports the boundary event instead:
 
 Commands that are inherently interactive or terminal-bound — `/config`, `/vim`,
 `/doctor`, `/login`, `/resume` — have no sensible Discord translation and are
-deliberately absent. `bypassPermissions` is not offered to `/permissions`:
-granting it from a chat message would remove the approval path the buttons exist
-to provide.
+deliberately absent. `/permissions bypassPermissions` turns off every check
+for that one thread (no classifier, no buttons); the daemon default is unchanged.
 
 Anything else is a message for Claude. An unrecognised `/word` is treated as
 prose rather than rejected.
@@ -347,7 +346,7 @@ every default is closed:
 - Permission-prompt buttons and registered slash commands are authority-checked
   against the top-level `allowFrom`, so a bystander who can see the prompt in a
   shared channel still cannot answer it.
-- `bypassPermissions` is not reachable from chat at all.
+- `bypassPermissions` can be set per thread with `/permissions`, by anyone the gate admits.
 
 The settings that widen this are `--allow` on a channel and `access allow
 <id>`. Treat both as "give this person sudo on my laptop", because that is the

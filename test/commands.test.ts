@@ -254,13 +254,11 @@ describe('/permissions', () => {
     expect(repo.getThread('thread-1')!.permission_mode).toBeNull()
   })
 
-  test('bypassPermissions cannot be set from chat', async () => {
+  test('bypassPermissions can be set for one thread', async () => {
     const { ctx, repo } = setup()
-    // Granting it from a Discord message would remove the approval path the
-    // permission buttons exist to provide.
     const out = await handleCommand('/permissions bypassPermissions', ctx)
-    expect(out.handled && out.reply).toContain('Unknown mode')
-    expect(repo.getThread('thread-1')!.permission_mode).toBeNull()
+    expect(out.handled && out.reply).toContain('bypassPermissions')
+    expect(repo.getThread('thread-1')!.permission_mode).toBe('bypassPermissions')
   })
 
   test('/permission is accepted as an alias', async () => {

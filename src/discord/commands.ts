@@ -40,7 +40,7 @@ export type CommandContext = {
   interrupt?: (conversationId: string) => boolean
 }
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk'] as const
+const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'] as const
 
 const HELP = [
   '**Thread**',
@@ -389,6 +389,7 @@ function permissions(ctx: CommandContext, arg: string): string {
       '`acceptEdits` — auto-accept file edits, ask for the rest',
       '`plan` — plan only, run nothing',
       '`dontAsk` — never ask; deny anything not pre-approved',
+      '`bypassPermissions` — no checks and no buttons; this thread only',
     ].join('\n')
   }
 
@@ -396,8 +397,8 @@ function permissions(ctx: CommandContext, arg: string): string {
   if (!mode) {
     return `Unknown mode \`${arg}\`. One of: ${PERMISSION_MODES.map(m => `\`${m}\``).join(', ')}.`
   }
-  // bypassPermissions is intentionally not offered: granting it from a chat
-  // message would remove the approval path that the buttons exist to provide.
+  // bypassPermissions is offered per thread on purpose: only senders who pass
+  // the access gate can type this, and it never changes the daemon default.
   ctx.repo.setThreadPermissionMode(ctx.conversationId, mode)
   return `Permission mode set to \`${mode}\` for this thread, starting with the next message.`
 }
