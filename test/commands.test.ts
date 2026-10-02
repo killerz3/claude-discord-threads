@@ -15,7 +15,7 @@ import type { Client } from 'discord.js'
 import { openDb } from '../src/store/db'
 import { Repo } from '../src/store/repo'
 import { handleCommand } from '../src/discord/commands'
-import { describeCompaction } from '../src/engine/worker'
+import { describeCompaction, isNotificationEcho } from '../src/engine/worker'
 
 function setup(
   opts: { archived?: () => void; failArchive?: boolean; running?: boolean } = {},
@@ -444,5 +444,28 @@ describe('/model outside a thread', () => {
     const { ctx } = setup()
     const out = await handleCommand('/cwd', inChannel(ctx))
     expect(out.handled && out.reply).toContain('no conversation here yet')
+  })
+})
+
+describe('notification echoes on resume', () => {
+  const result = (over: Record<string, unknown> = {}) =>
+    ({ type: 'result', subtype: 'success', result: '', num_turns: 0, ...over }) as any
+
+  test('the empty result settling a replayed notification is skipped', () => {
+    // Resuming after background agents were killed: the CLI answers their
+    // "stopped" notice with an empty zero-turn result before reading the prompt.
+    expect(isNotificationEcho(result(), true, false)).toBe(true)
+  })
+
+  test('the real reply is never skipped', () => {
+    expect(isNotificationEcho(result({ result: 'pong', num_turns: 1 }), true, false)).toBe(false)
+  })
+
+  test('an empty result with no notification before it is still an error', () => {
+    expect(isNotificationEcho(result(), false, false)).toBe(false)
+  })
+
+  test('a /compact result is left to the compaction path', () => {
+    expect(isNotificationEcho(result(), true, true)).toBe(false)
   })
 })

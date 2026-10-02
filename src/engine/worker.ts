@@ -92,6 +92,9 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     let liveTasks = 0
     let interimPosted = false
     let timedOut = false
+    // Set when a task notification arrives, cleared by the next result. See
+    // isNotificationEcho.
+    let notified = false
 
     // Streaming input, held open until the turn is truly finished. A string
     // prompt closes stdin, and the CLI kills background agents when a
@@ -109,6 +112,15 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
         if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
           liveTasks = message.tasks.filter(t => !t.ambient).length
           continue
+        }
+        if (message.type === 'system' && message.subtype === 'task_notification') {
+          notified = true
+          continue
+        }
+        if (message.type === 'result') {
+          const echo = isNotificationEcho(message, notified, compaction !== undefined)
+          notified = false
+          if (echo) continue
         }
         const outcome = consume(message, ctx)
         if (outcome.sessionId) sessionId = outcome.sessionId
@@ -217,6 +229,25 @@ export function describeCompaction(c: Compaction): string {
   }
   if (typeof c.durationMs === 'number') parts.push(`Took ${(c.durationMs / 1000).toFixed(1)}s.`)
   return parts.join(' ')
+}
+
+/**
+ * A result that answers a task notification, not the prompt.
+ *
+ * Resuming a session whose background agents were killed makes the CLI replay
+ * their "stopped" notification first. It settles that with its own result,
+ * empty and with no model turns, before it reads the prompt at all. Taken as
+ * the turn's answer, that result ended the turn with "produced no reply" and
+ * closed the input before the prompt was ever answered.
+ */
+export function isNotificationEcho(
+  message: Extract<SDKMessage, { type: 'result' }>,
+  notified: boolean,
+  compacted: boolean,
+): boolean {
+  if (!notified || compacted) return false
+  if (message.subtype !== 'success') return false
+  return message.num_turns === 0 && !message.result?.trim()
 }
 
 function consume(message: SDKMessage, ctx: TurnContext): Consumed {
