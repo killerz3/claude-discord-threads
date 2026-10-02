@@ -18,7 +18,7 @@ import type { Repo } from '../store/repo'
 import type { TurnRow } from '../store/db'
 import type { Signals } from '../discord/signals'
 import { sendReply } from '../discord/threads'
-import { MAX_LIVE_WORKERS } from '../config'
+import { MAX_LIVE_WORKERS, steerEnabled } from '../config'
 
 /** How many restarts a single turn may be replayed across before it is dropped. */
 const MAX_REPLAY_ATTEMPTS = 3
@@ -54,7 +54,10 @@ export type ResponderResult =
   | { kind: 'retry'; afterMs: number; reason: string }
   | { kind: 'error'; message: string }
 
-export type Responder = (ctx: TurnContext) => Promise<ResponderResult>
+export type Responder = ((ctx: TurnContext) => Promise<ResponderResult>) & {
+  /** Push a message into the conversation's running turn. False if none is running. */
+  steer?: (conversationId: string, content: string) => boolean
+}
 
 export type DeliveryDeps = {
   repo: Repo
@@ -84,6 +87,7 @@ export class Delivery {
    * which is what the tests await.
    */
   submit(ctx: TurnContext): Promise<void> {
+    if (this.steer(ctx)) return Promise.resolve()
     const prev = this.chains.get(ctx.conversationId) ?? Promise.resolve()
     const next = prev.then(() => this.run(ctx)).catch(err => {
       process.stderr.write(`discord-threads: turn ${ctx.turn.id} crashed: ${err}\n`)
@@ -94,6 +98,19 @@ export class Delivery {
       if (this.chains.get(ctx.conversationId) === next) this.chains.delete(ctx.conversationId)
     })
     return next
+  }
+
+  /**
+   * Fold a message into the turn already running in its thread. The running
+   * turn's answer covers it; if the CLI answers it separately, that answer
+   * arrives as a late reply. Either way this row needs no reply of its own.
+   */
+  private steer(ctx: TurnContext): boolean {
+    if (!steerEnabled() || !this.running.has(ctx.conversationId)) return false
+    if (!this.deps.responder.steer?.(ctx.conversationId, ctx.turn.content)) return false
+    this.deps.repo.finishTurn(ctx.turn.id, [])
+    if (ctx.message) void this.deps.signals.react(ctx.message, '↪️')
+    return true
   }
 
   private async acquire(): Promise<void> {
