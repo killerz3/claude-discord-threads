@@ -395,3 +395,32 @@ describe('restart', () => {
     expect(repo.getTurn(turn.id)!.error).toContain('gave up after')
   })
 })
+
+describe('steering', () => {
+  test('a message sent mid-turn goes into that turn, not a second reply', async () => {
+    process.env.DISCORD_STEER = '1'
+    const steered: string[] = []
+    let finish!: () => void
+    const responder: Responder = Object.assign(
+      async () => {
+        await new Promise<void>(r => (finish = r))
+        return { kind: 'reply' as const, text: 'answer' }
+      },
+      { steer: (_: string, content: string) => (steered.push(content), true) },
+    )
+    const { repo, delivery, sent } = harness(responder)
+    const a = repo.enqueueTurn({ threadId: 'thread-1', inboundMessageId: 'msg-1', authorId: 'u', content: 'first' })!
+    const b = repo.enqueueTurn({ threadId: 'thread-1', inboundMessageId: 'msg-2', authorId: 'u', content: 'also this' })!
+
+    const running = delivery.submit(ctxFor(repo, a.id))
+    await new Promise(r => setTimeout(r, 0))
+    await delivery.submit(ctxFor(repo, b.id))
+    finish()
+    await running
+    delete process.env.DISCORD_STEER
+
+    expect(steered).toEqual(['also this'])
+    expect(sent).toEqual(['answer'])
+    expect(repo.getTurn(b.id)!.state).toBe('done')
+  })
+})

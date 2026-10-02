@@ -73,7 +73,7 @@ const BACKGROUND_HOLD_MS = Number(process.env.DISCORD_BACKGROUND_HOLD_MS ?? 2 * 
 type LiveSession = {
   /** The turn the next result belongs to. Swapped as new turns arrive. */
   ctx: TurnContext
-  push: (content: string) => void
+  push: (content: string, priority?: SDKUserMessage['priority']) => void
   close: () => void
   waiter?: (r: ResponderResult) => void
   /** Non-ambient background tasks still running. */
@@ -84,7 +84,7 @@ type LiveSession = {
 export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
   const live = new Map<string, LiveSession>()
 
-  return async (ctx: TurnContext): Promise<ResponderResult> => {
+  const respond = async (ctx: TurnContext): Promise<ResponderResult> => {
     const existing = live.get(ctx.conversationId)
     if (existing) {
       clearTimeout(existing.hold)
@@ -122,7 +122,7 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     const inbox = new Inbox()
     const session: LiveSession = {
       ctx,
-      push: content => inbox.push(content),
+      push: (content, priority) => inbox.push(content, priority),
       close: () => inbox.close(),
       tasks: 0,
     }
@@ -135,16 +135,26 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     })
     return reply
   }
+
+  // Only while a turn is waiting on its answer; otherwise it queues normally.
+  const steer = (conversationId: string, content: string): boolean => {
+    const session = live.get(conversationId)
+    if (!session?.waiter) return false
+    session.push(content, 'next')
+    return true
+  }
+
+  return Object.assign(respond, { steer })
 }
 
 /** The session's input: user messages in, closed when nothing more is owed. */
 class Inbox {
-  private queue: string[] = []
+  private queue: Array<{ content: string; priority?: SDKUserMessage['priority'] }> = []
   private wake?: () => void
   private closed = false
 
-  push(content: string): void {
-    this.queue.push(content)
+  push(content: string, priority?: SDKUserMessage['priority']): void {
+    this.queue.push({ content, priority })
     this.wake?.()
   }
 
@@ -155,9 +165,14 @@ class Inbox {
 
   async *messages(): AsyncGenerator<SDKUserMessage> {
     while (true) {
-      const content = this.queue.shift()
-      if (content !== undefined) {
-        yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null }
+      const next = this.queue.shift()
+      if (next !== undefined) {
+        yield {
+          type: 'user',
+          message: { role: 'user', content: next.content },
+          parent_tool_use_id: null,
+          ...(next.priority ? { priority: next.priority } : {}),
+        }
         continue
       }
       if (this.closed) return

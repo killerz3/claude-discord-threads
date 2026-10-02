@@ -84,5 +84,14 @@ export const THREAD_IDLE_MS = Number(
 /** How often to sweep for idle threads. */
 export const ARCHIVE_SWEEP_MS = 30 * 60 * 1000
 
+/**
+ * Steering: a message sent while a turn is running goes into that turn (picked
+ * up at the next tool call) instead of waiting for it to finish. Read per call
+ * so the .env value applies however modules load.
+ */
+export function steerEnabled(): boolean {
+  return process.env.DISCORD_STEER === '1'
+}
+
 /** Discord's typing indicator lapses after ~10s; refresh inside that. */
 export const TYPING_REFRESH_MS = 8000
