@@ -59,6 +59,7 @@ const HELP = [
   '_(outside a thread, `/model` is `/model global` — there is no thread to set)_',
   '`/permissions [mode]` — show or set the permission mode',
   '`/compact` — summarise this conversation to free up context _(costs tokens)_',
+  '`/recap` — where this thread stands and what comes next _(costs tokens)_',
   '',
   '**Elsewhere**',
   '`/threads` — every open thread',
