@@ -310,6 +310,7 @@ Environment variables, all optional:
 | `DISCORD_THREAD_IDLE_MS` | archive a thread after this long idle (default 24h) |
 | `DISCORD_WORKER_CWD` | default working directory for new threads |
 | `DISCORD_RESPONDER=echo` | echo instead of calling the model |
+| `DISCORD_STEER=1` | a message sent while a turn runs joins that turn instead of queuing (default off) |
 | `DISCORD_LOG_LEVEL` / `DISCORD_LOG_JSON` | `debug`–`error`; `1` for JSON lines |
 
 `auto` is the mode Claude Code's own interactive sessions use: a classifier
