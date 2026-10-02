@@ -333,6 +333,13 @@ describe('/compact', () => {
   })
 })
 
+describe('/recap', () => {
+  test('falls through, because Claude Code handles it natively', async () => {
+    const { ctx } = setup()
+    expect((await handleCommand('/recap', ctx)).handled).toBe(false)
+  })
+})
+
 describe('compaction reporting', () => {
   test('a silent compaction becomes a readable answer, not an error', () => {
     // /compact succeeds with an EMPTY result string, which would otherwise

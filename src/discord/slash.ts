@@ -62,6 +62,7 @@ export const SLASH_COMMANDS: CommandSpec[] = [
   },
   { name: 'threads', description: 'List every open thread' },
   { name: 'compact', description: 'Summarise this conversation to free up context (costs tokens)' },
+  { name: 'recap', description: 'Where this thread stands and what comes next (costs tokens)' },
 ]
 
 function toPayload(spec: CommandSpec) {
@@ -149,14 +150,16 @@ async function handle(
   )
   const text = `/${interaction.commandName}${arg ? ` ${arg}` : ''}`
 
-  // /compact is executed by Claude Code itself, so it has to become a real turn
-  // rather than a daemon answer. Its result lands in the thread as usual.
-  if (interaction.commandName === 'compact') {
+  // /compact and /recap are executed by Claude Code itself, so they have to
+  // become real turns rather than daemon answers. The result lands in the
+  // thread as usual.
+  if (interaction.commandName === 'compact' || interaction.commandName === 'recap') {
     const queued = await deps.enqueueTurn(conversationId, text, interaction.user.id)
+    const compact = interaction.commandName === 'compact'
     await interaction.reply({
       content: queued
-        ? 'Compacting — the result will appear in this thread.'
-        : 'Nothing to compact: this thread has no conversation yet.',
+        ? `${compact ? 'Compacting' : 'Recapping'} — the result will appear in this thread.`
+        : `Nothing to ${compact ? 'compact' : 'recap'}: this thread has no conversation yet.`,
       flags: MessageFlags.Ephemeral,
     })
     return
