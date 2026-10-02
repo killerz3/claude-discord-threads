@@ -395,3 +395,43 @@ describe('restart', () => {
     expect(repo.getTurn(turn.id)!.error).toContain('gave up after')
   })
 })
+
+describe('follow-ups while background agents run', () => {
+  test('a message sent during the wait joins the live session instead of queueing behind it', async () => {
+    // The first turn answers, then stays open on background work until told
+    // to finish. Before this, the second message waited up to two hours.
+    let finish!: () => void
+    const done = new Promise<void>(r => (finish = r))
+    const pushed: string[] = []
+    const responder: Responder = async ctx => {
+      await ctx.onInterim?.('first answer')
+      ctx.onWaiting?.(async content => {
+        pushed.push(content)
+        return { kind: 'reply', text: `answer to ${content}` }
+      })
+      await done
+      ctx.onWaiting?.(null)
+      return { kind: 'handled' }
+    }
+    const { repo, delivery, sent } = harness(responder)
+    const enqueue = (id: string, content: string) =>
+      repo.enqueueTurn({ threadId: 'thread-1', inboundMessageId: id, authorId: 'user-1', content })!
+
+    const first = enqueue('msg-1', 'go')
+    const firstDone = delivery.submit(ctxFor(repo, first.id))
+    await Bun.sleep(5)
+    const second = enqueue('msg-2', 'status?')
+    await delivery.submit(ctxFor(repo, second.id)).catch(() => {})
+    // Resolved while the first turn is still waiting.
+    await Bun.sleep(5)
+    expect(pushed).toEqual(['status?'])
+    expect(sent).toEqual(['first answer', 'answer to status?'])
+    expect(repo.getTurn(second.id)!.state).toBe('done')
+    expect(repo.getTurn(first.id)!.state).toBe('running')
+
+    finish()
+    await firstDone
+    expect(repo.getTurn(first.id)!.state).toBe('done')
+    expect(sent).toHaveLength(2)
+  })
+})

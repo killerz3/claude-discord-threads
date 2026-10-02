@@ -42,7 +42,16 @@ export type TurnContext = {
    * Best effort and outside the ledger: a crash replays the turn in full.
    */
   onInterim?: (text: string) => Promise<void>
+  /**
+   * Called once the turn has answered and is only waiting on background work,
+   * with a way to send the next message into the same live session; called
+   * with null when the turn ends. See Delivery.submit.
+   */
+  onWaiting?: (push: FollowUp | null) => void
 }
+
+/** Sends a message into a live session; resolves with the answer to it. */
+export type FollowUp = (content: string) => Promise<ResponderResult>
 
 export type ResponderResult =
   | {
@@ -56,6 +65,8 @@ export type ResponderResult =
   /** Transient — the turn goes back on the queue rather than failing. */
   | { kind: 'retry'; afterMs: number; reason: string }
   | { kind: 'error'; message: string }
+  /** Already answered on Discord by an interim post; nothing more to send. */
+  | { kind: 'handled' }
 
 export type Responder = (ctx: TurnContext) => Promise<ResponderResult>
 
@@ -74,6 +85,8 @@ export class Delivery {
   private chains = new Map<string, Promise<void>>()
   /** In-flight turns, so `/stop` can reach the right one. */
   private running = new Map<string, AbortController>()
+  /** Turns that have answered and are waiting on background agents. */
+  private waiting = new Map<string, FollowUp>()
   private live = 0
   private waiters: Array<() => void> = []
   private stopped = false
@@ -88,15 +101,21 @@ export class Delivery {
    */
   submit(ctx: TurnContext): Promise<void> {
     const prev = this.chains.get(ctx.conversationId) ?? Promise.resolve()
-    const next = prev.then(() => this.run(ctx)).catch(err => {
+    // A turn waiting on background agents would otherwise hold the thread for
+    // hours. Its session is idle, so the new message joins it instead.
+    const followUp = this.waiting.get(ctx.conversationId)
+    const work = followUp ? this.run(ctx, followUp) : prev.then(() => this.run(ctx))
+    const settled = work.catch(err => {
       process.stderr.write(`discord-threads: turn ${ctx.turn.id} crashed: ${err}\n`)
     })
+    // Later turns still queue behind both the waiting turn and this one.
+    const next = followUp ? Promise.all([prev, settled]).then(() => {}) : settled
     this.chains.set(ctx.conversationId, next)
     void next.then(() => {
       // Drop the chain once it is idle so the map does not grow without bound.
       if (this.chains.get(ctx.conversationId) === next) this.chains.delete(ctx.conversationId)
     })
-    return next
+    return settled
   }
 
   private async acquire(): Promise<void> {
@@ -114,7 +133,7 @@ export class Delivery {
     if (next) next()
   }
 
-  private async run(ctx: TurnContext): Promise<void> {
+  private async run(ctx: TurnContext, followUp?: FollowUp): Promise<void> {
     if (this.stopped) return
 
     // Re-read: a concurrent recovery pass may already have settled this turn.
@@ -124,21 +143,35 @@ export class Delivery {
     const { repo, signals } = this.deps
     const msg = ctx.message
 
-    await this.acquire()
+    // A follow-up rides on a worker that already holds a slot.
+    if (!followUp) await this.acquire()
     const abort = ctx.abort ?? new AbortController()
-    this.running.set(ctx.conversationId, abort)
+    if (!followUp) this.running.set(ctx.conversationId, abort)
     try {
       repo.setTurnState(ctx.turn.id, 'running')
       if (msg) void signals.working(msg)
 
-      const result = await this.deps.responder({
-        ...ctx,
-        turn: fresh,
-        abort,
-        onInterim: async text => {
-          await this.post(ctx, text)
-        },
-      })
+      const result = followUp
+        ? await followUp(fresh.content)
+        : await this.deps.responder({
+            ...ctx,
+            turn: fresh,
+            abort,
+            onInterim: async text => {
+              await this.post(ctx, text)
+            },
+            onWaiting: push => {
+              if (push) this.waiting.set(ctx.conversationId, push)
+              else this.waiting.delete(ctx.conversationId)
+            },
+          })
+
+      if (result.kind === 'handled') {
+        repo.finishTurn(ctx.turn.id, [])
+        repo.touchThread(ctx.conversationId)
+        if (msg) await signals.settled(msg, true)
+        return
+      }
 
       if (result.kind === 'retry') {
         // Not a failure: the obligation stands, so put it back on the queue.
@@ -184,8 +217,10 @@ export class Delivery {
         if (msg) await signals.settled(msg, false).catch(() => {})
       }
     } finally {
-      if (this.running.get(ctx.conversationId) === abort) this.running.delete(ctx.conversationId)
-      this.release()
+      if (!followUp) {
+        if (this.running.get(ctx.conversationId) === abort) this.running.delete(ctx.conversationId)
+        this.release()
+      }
     }
   }
 

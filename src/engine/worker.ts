@@ -95,6 +95,13 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     // Set when a task notification arrives, cleared by the next result. See
     // isNotificationEcho.
     let notified = false
+    // Messages sent into this session while it waits on background work, in
+    // the order they were pushed. Each result answers the oldest one.
+    const followUps: Array<(r: ResponderResult) => void> = []
+    let answeredFollowUp = false
+    const settleFollowUps = (r: ResponderResult) => {
+      for (const resolve of followUps.splice(0)) resolve(r)
+    }
 
     // Streaming input, held open until the turn is truly finished. A string
     // prompt closes stdin, and the CLI kills background agents when a
@@ -130,14 +137,35 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
           // Background work is still running: post what the model said so far
           // and keep the session open. Each finished task wakes the model,
           // which produces another result; the last one is the real reply.
+          const answers = followUps.shift()
+          if (answers) {
+            answers(outcome.result.kind === 'reply'
+              ? { ...outcome.result, sessionId: sessionId ?? outcome.result.sessionId }
+              : outcome.result)
+            answeredFollowUp = true
+            finalText = ''
+            // This turn's own answer went out as an interim; the follow-up
+            // carried the last one, so there is nothing left to post.
+            if (liveTasks === 0 && followUps.length === 0) return { kind: 'handled' }
+            continue
+          }
           if (liveTasks > 0 && outcome.result.kind !== 'retry') {
             if (outcome.result.kind === 'reply') {
               await ctx.onInterim?.(outcome.result.text).catch(() => {})
               interimPosted = true
+              // Only now is the turn idle and waiting: a new message in the
+              // thread can join this session instead of queueing behind it.
+              ctx.onWaiting?.(content =>
+                new Promise<ResponderResult>(resolve => {
+                  followUps.push(resolve)
+                  input.push(content)
+                }),
+              )
             }
             finalText = ''
             continue
           }
+          if (answeredFollowUp && outcome.result.kind === 'error') return { kind: 'handled' }
           // A command that succeeded silently is not a failure.
           if (outcome.result.kind === 'error' && compaction) {
             return { kind: 'reply', text: describeCompaction(compaction), sessionId }
@@ -163,8 +191,12 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.' }
       return { kind: 'error', message: describe(err) }
     } finally {
+      ctx.onWaiting?.(null)
       clearTimeout(timer)
       input.close()
+      // The CLI may batch queued messages into one answer, so a follow-up can
+      // outlive the stream with its reply already posted under another.
+      settleFollowUps(ctx.abort?.signal.aborted ? { kind: 'error', message: 'Stopped.' } : { kind: 'handled' })
     }
 
     if (timedOut) {
@@ -189,14 +221,41 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
  * A one-message prompt stream that stays open until `close()`. Closing ends
  * stdin, which lets the CLI exit once its current work settles.
  */
-export function openInput(content: string): { stream: AsyncIterable<SDKUserMessage>; close: () => void } {
-  let close!: () => void
-  const closed = new Promise<void>(resolve => (close = resolve))
-  async function* stream(): AsyncIterable<SDKUserMessage> {
-    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content } }
-    await closed
+export function openInput(content: string): {
+  stream: AsyncIterable<SDKUserMessage>
+  push: (content: string) => void
+  close: () => void
+} {
+  const queue: string[] = [content]
+  let closed = false
+  let wake: (() => void) | undefined
+  const poke = () => {
+    wake?.()
+    wake = undefined
   }
-  return { stream: stream(), close }
+  async function* stream(): AsyncIterable<SDKUserMessage> {
+    while (true) {
+      const next = queue.shift()
+      if (next !== undefined) {
+        yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: next } }
+        continue
+      }
+      if (closed) return
+      await new Promise<void>(resolve => (wake = resolve))
+    }
+  }
+  return {
+    stream: stream(),
+    push: content => {
+      if (closed) return
+      queue.push(content)
+      poke()
+    },
+    close: () => {
+      closed = true
+      poke()
+    },
+  }
 }
 
 export type Compaction = { preTokens: number; postTokens?: number; durationMs?: number }
