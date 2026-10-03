@@ -38,7 +38,7 @@ export type TurnContext = {
   abort?: AbortController
   onToolUse?: (label: string) => void
   /** Posts an answer the model gives after its turn, when background work finishes. */
-  onLateReply?: (text: string) => Promise<void>
+  onLateReply?: (text: string, files?: string[]) => Promise<void>
 }
 
 export type ResponderResult =
@@ -145,8 +145,8 @@ export class Delivery {
       repo.setTurnState(ctx.turn.id, 'running')
       if (msg) void signals.working(msg)
 
-      const onLateReply = (text: string) =>
-        this.post(ctx, text).then(
+      const onLateReply = (text: string, files?: string[]) =>
+        this.post(ctx, text, files).then(
           () => {},
           err => void process.stderr.write(`discord-threads: late reply for turn ${ctx.turn.id} failed: ${err}\n`),
         )
