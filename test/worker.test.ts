@@ -45,3 +45,25 @@ describe('late wake-ups after background work', () => {
     expect(await run('NO_REPLY')).toEqual({ reply: 'Answer', late: [] })
   })
 })
+
+describe('extractAttachments', () => {
+  const { extractAttachments } = require('../src/engine/worker')
+  const img = `${require('os').tmpdir()}/attach-fixture.png`
+  require('fs').writeFileSync(img, 'x')
+
+  test('ATTACH lines become files and leave the text', () => {
+    const r = extractAttachments(`Here it is.\nATTACH: ${img}\nDone.`)
+    expect(r.files).toEqual([img])
+    expect(r.text).toBe('Here it is.\nDone.')
+  })
+
+  test('a missing file is reported, not fatal', () => {
+    const r = extractAttachments('Look:\nATTACH: /nope/missing.png')
+    expect(r.files).toEqual([])
+    expect(r.text).toContain('could not attach /nope/missing.png')
+  })
+
+  test('attachment-only reply still has text', () => {
+    expect(extractAttachments(`ATTACH: ${img}`).text).toBe('attach-fixture.png')
+  })
+})

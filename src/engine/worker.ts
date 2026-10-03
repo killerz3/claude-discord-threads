@@ -17,6 +17,7 @@
 import { query, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Responder, ResponderResult, TurnContext } from './delivery'
 import { log } from '../log'
+import { assertAttachable } from '../discord/util'
 
 /** Retry ceiling when Discord gives us no better hint. */
 const DEFAULT_RETRY_MS = 60_000
@@ -38,7 +39,31 @@ const SYSTEM_APPEND = [
   'needs nothing from the user (a watcher expired, a task from an earlier session was',
   `stopped, nothing changed), reply with exactly ${NO_REPLY} and nothing else; it is not posted.`,
   'Ignore stale notifications about tasks from an earlier session unless they matter to the user.',
+  'To send a file or image, put a line `ATTACH: /absolute/path` in your reply (one per file, max 10, 25MB each);',
+  'the line is removed and the file is uploaded with the message.',
 ].join(' ')
+
+/**
+ * Pull `ATTACH: /path` lines out of a reply. Files Discord would refuse are
+ * reported in the text instead, so one bad path does not sink the reply.
+ */
+export function extractAttachments(text: string): { text: string; files: string[] } {
+  const files: string[] = []
+  const problems: string[] = []
+  const kept = text.split('\n').filter((line) => {
+    const m = line.match(/^\s*ATTACH:\s*(\/\S.*?)\s*$/)
+    if (!m) return true
+    try {
+      assertAttachable([...files, m[1]!])
+      files.push(m[1]!)
+    } catch (err) {
+      problems.push(`(could not attach ${m[1]}: ${err instanceof Error ? err.message : err})`)
+    }
+    return false
+  })
+  const out = [...kept, ...problems].join('\n').trim()
+  return { text: out || files.map((f) => f.slice(f.lastIndexOf('/') + 1)).join(', '), files }
+}
 
 /**
  * Match the operator's interactive sessions, which run with auto mode on.
@@ -216,7 +241,7 @@ async function pump(
     // Nobody is waiting: this is the model waking up after background work.
     const text = result.kind === 'reply' ? result.text : result.kind === 'error' ? `❌ ${result.message}` : ''
     if (text.trim() === NO_REPLY) return log.info('late wake-up needed no reply', { conversation: session.ctx.conversationId })
-    if (text) void session.ctx.onLateReply?.(text)
+    if (text) void session.ctx.onLateReply?.(text, result.kind === 'reply' ? result.files : undefined)
   }
 
   try {
@@ -355,14 +380,15 @@ export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): C
     // `result` is only the *last* assistant message. When the model writes its
     // answer and then ends on a tool call or a thinking-only message, it is
     // empty even though the answer exists; post the last text instead.
-    const text = message.result?.trim() || lastText
+    const raw = message.result?.trim() || lastText
     // On resume the CLI first reports tasks orphaned by the previous session
     // and ends that zero-turn pass with an empty result. It answers no one;
     // the user's own turn follows with its own result.
-    if (!text && message.origin?.kind === 'task-notification') return { sessionId }
-    if (!text) {
+    if (!raw && message.origin?.kind === 'task-notification') return { sessionId }
+    if (!raw) {
       return { sessionId, result: { kind: 'error', message: 'the model produced no reply' } }
     }
+    const { text, files } = extractAttachments(raw)
     return {
       sessionId,
       text,
@@ -370,6 +396,7 @@ export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): C
         kind: 'reply',
         text,
         sessionId,
+        ...(files.length > 0 ? { files } : {}),
         usage: {
           costUsd: message.total_cost_usd,
           inputTokens: message.usage?.input_tokens,
