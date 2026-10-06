@@ -150,13 +150,22 @@ async function handleInbound(msg: Message): Promise<void> {
     conversationId: msg.channelId,
     interrupt: id => delivery.interrupt(id),
   })
+  // `/model <name> <message>` is the one command that is not a terminal
+  // reply: it resolves to a model override plus the text to actually send, so
+  // it falls through to the normal turn pipeline below instead of answering
+  // here. Every other command is a complete answer with no turn.
+  let forward: { content: string; model: string } | null = null
   if (command.handled) {
-    repo.setWatermark(parentChannelOf(msg), msg.id)
-    const ch = await fetchSendable(client, msg.channelId)
-    const sent = await ch.send(command.reply)
-    noteSent(sent.id)
-    await signals.settled(msg, true)
-    return
+    if ('forward' in command) {
+      forward = command.forward
+    } else {
+      repo.setWatermark(parentChannelOf(msg), msg.id)
+      const ch = await fetchSendable(client, msg.channelId)
+      const sent = await ch.send(command.reply)
+      noteSent(sent.id)
+      await signals.settled(msg, true)
+      return
+    }
   }
 
   const convo = await resolveConversation(msg, repo)
@@ -172,13 +181,22 @@ async function handleInbound(msg: Message): Promise<void> {
       cwd: DEFAULT_CWD,
       title: null,
       state: 'open',
-      // A new thread inherits the global default set by `/model global`. It is
-      // copied, not referenced, so changing the default later cannot move a
+      // A new thread inherits the global default set by `/model global`, or
+      // `/model <name> <message>`'s override when that is what started it. It
+      // is copied, not referenced, so changing the default later cannot move a
       // conversation already under way onto a different model.
-      model: repo.defaultModel(),
+      model: forward?.model ?? repo.defaultModel(),
       permission_mode: null,
       header_message_id: null,
     })
+
+  // An existing thread does not get the override for free — `/model` only
+  // ever takes effect "starting with the next message", and this message is
+  // that next message.
+  if (existing && forward && existing.model !== forward.model) {
+    repo.setThreadModel(convo.id, forward.model)
+    thread.model = forward.model
+  }
 
   // Say which model is answering, as the thread's first message. Awaited so it
   // lands above the reply rather than racing it.
@@ -188,12 +206,18 @@ async function handleInbound(msg: Message): Promise<void> {
     } catch (err) {
       log.debug('could not post model header', { thread: convo.id, error: describeError(err) })
     }
+  } else if (existing && forward) {
+    try {
+      await syncModelHeader(client, repo, convo.id)
+    } catch (err) {
+      log.debug('could not update model header', { thread: convo.id, error: describeError(err) })
+    }
   }
 
   // Attachments are downloaded here rather than exposed as a tool: workers get
   // no Discord tools at all, so this is the only path by which an image or a
   // log file reaches the model.
-  const content = await composeTurnContent(msg)
+  const content = await composeTurnContent(msg, forward?.content)
 
   const turn = repo.enqueueTurn({
     threadId: convo.id,
@@ -221,7 +245,7 @@ async function handleInbound(msg: Message): Promise<void> {
     .finally(async () => {
       signals.stopTyping(convo.id)
       await status.close()
-      await titleThread(convo.id, msg.content)
+      await titleThread(convo.id, forward?.content ?? msg.content)
     })
 }
 

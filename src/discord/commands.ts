@@ -25,12 +25,18 @@
 import { statSync } from 'fs'
 import type { Client } from 'discord.js'
 import type { Repo } from '../store/repo'
-import { availableModels, contextUsage, planUsage } from '../engine/control'
+import { availableModels, contextUsage, planUsage, type ModelChoice } from '../engine/control'
 import { syncModelHeader } from './threads'
 import { DEFAULT_CWD } from '../config'
 import { log, describeError } from '../log'
 
-export type CommandOutcome = { handled: false } | { handled: true; reply: string }
+export type CommandOutcome =
+  | { handled: false }
+  | { handled: true; reply: string }
+  // `/model <name> <message>` resolves the name, then hands the rest straight
+  // to the daemon to send as the actual turn — there is no reply because the
+  // model's answer is the reply.
+  | { handled: true; forward: { content: string; model: string } }
 
 export type CommandContext = {
   client: Client
@@ -56,8 +62,11 @@ const HELP = [
   '`/context` — context window used by this conversation',
   '`/model [name]` — show, list or set the model for this thread',
   '`/model global [name]` — the model every new thread starts on',
+  '`/model <name> <message>` — set the model and send `<message>` in the same step,' +
+    ' e.g. starting a thread on `opus` in one line',
   '_(outside a thread, `/model` is `/model global` — there is no thread to set)_',
   '`/permissions [mode]` — show or set the permission mode',
+  '`/yolo [on|off]` — bypass tool prompts entirely for this thread _(no buttons, no asking)_',
   '`/compact` — summarise this conversation to free up context _(costs tokens)_',
   '',
   '**Elsewhere**',
@@ -94,10 +103,12 @@ export async function handleCommand(raw: string, ctx: CommandContext): Promise<C
     case 'context':
       return reply(await context(ctx))
     case 'model':
-      return reply(await model(ctx, arg))
+      return await modelCommand(ctx, arg)
     case 'permissions':
     case 'permission':
       return reply(permissions(ctx, arg))
+    case 'yolo':
+      return reply(yolo(ctx, arg))
     case 'threads':
       return reply(threads(ctx))
     // /compact is deliberately absent from this switch. Claude Code's own CLI
@@ -250,6 +261,21 @@ async function context(ctx: CommandContext): Promise<string> {
 const RESET_WORDS = ['default', 'reset', 'none', 'clear']
 
 /**
+ * "opus" should find `opus[1m]` / "Opus (1M context)": the SDK lists the
+ * family under its context-window variant, not the bare alias.
+ */
+function matchModel(models: ModelChoice[], arg: string): ModelChoice | undefined {
+  const want = arg.toLowerCase()
+  const bare = (s: string) => s.toLowerCase().replace(/\[[^\]]*\]$/, '').replace(/\s*\(.*\)$/, '')
+  return (
+    models.find(m => m.value.toLowerCase() === want) ??
+    models.find(m => m.displayName.toLowerCase() === want) ??
+    models.find(m => bare(m.value) === want) ??
+    models.find(m => bare(m.displayName) === want)
+  )
+}
+
+/**
  * Resolve what the user typed to a model value.
  *
  * An exact value or a casually typed display name ("opus") both work. If the
@@ -261,19 +287,40 @@ async function resolveModelArg(
   arg: string,
 ): Promise<{ value: string } | { error: string }> {
   const models = await availableModels(cwd)
-  const want = arg.toLowerCase()
-  // "opus" should find `opus[1m]` / "Opus (1M context)": the SDK lists the
-  // family under its context-window variant, not the bare alias.
-  const bare = (s: string) => s.toLowerCase().replace(/\[[^\]]*\]$/, '').replace(/\s*\(.*\)$/, '')
-  const match =
-    models.find(m => m.value.toLowerCase() === want) ??
-    models.find(m => m.displayName.toLowerCase() === want) ??
-    models.find(m => bare(m.value) === want) ??
-    models.find(m => bare(m.displayName) === want)
+  const match = matchModel(models, arg)
   if (models.length > 0 && !match) {
     return { error: `Unknown model \`${arg}\`. Run \`/model list\` to see the options.` }
   }
   return { value: match?.value ?? arg }
+}
+
+/**
+ * `/model <name> <message>` — set the model and forward the rest as the turn,
+ * so a thread can start on a non-default model in one line instead of two.
+ *
+ * Only splits on a *confirmed* match against the live model list: with the
+ * list unavailable there is no way to tell a model name from the first word
+ * of an ordinary message, so this defers to the plain `/model <arg>` path,
+ * same as it always has.
+ */
+async function modelCommand(ctx: CommandContext, arg: string): Promise<CommandOutcome> {
+  const raw = arg.trim()
+  const lower = raw.toLowerCase()
+
+  if (!raw || lower === 'list' || lower === 'global' || lower.startsWith('global ') || RESET_WORDS.includes(lower)) {
+    return reply(await model(ctx, arg))
+  }
+
+  const [first, ...restWords] = raw.split(/\s+/)
+  const prompt = restWords.join(' ')
+  if (!prompt) return reply(await model(ctx, arg))
+
+  const cwd = ctx.repo.getThread(ctx.conversationId)?.cwd ?? DEFAULT_CWD
+  const models = await availableModels(cwd)
+  const match = matchModel(models, first!)
+  if (!match) return reply(await model(ctx, arg))
+
+  return { handled: true, forward: { content: prompt, model: match.value } }
 }
 
 async function model(ctx: CommandContext, arg: string): Promise<string> {
@@ -393,12 +440,36 @@ function permissions(ctx: CommandContext, arg: string): string {
 
   const mode = PERMISSION_MODES.find(m => m.toLowerCase() === arg.toLowerCase())
   if (!mode) {
-    return `Unknown mode \`${arg}\`. One of: ${PERMISSION_MODES.map(m => `\`${m}\``).join(', ')}.`
+    return `Unknown mode \`${arg}\`. One of: ${PERMISSION_MODES.map(m => `\`${m}\``).join(', ')}. ` +
+      'For no prompts at all, use `/yolo`.'
   }
-  // bypassPermissions is intentionally not offered: granting it from a chat
-  // message would remove the approval path that the buttons exist to provide.
+  // bypassPermissions is deliberately not one of these: it does not belong next
+  // to a list of ordinary modes a stray keystroke could land on. `/yolo` is the
+  // explicit, differently-named door to it instead.
   ctx.repo.setThreadPermissionMode(ctx.conversationId, mode)
   return `Permission mode set to \`${mode}\` for this thread, starting with the next message.`
+}
+
+/**
+ * `/yolo` — bypassPermissions for this thread: every tool call runs
+ * unprompted, no buttons, no classifier. Kept out of `/permissions`'s own
+ * list (see above) and given a name that reads as a warning.
+ */
+function yolo(ctx: CommandContext, arg: string): string {
+  const thread = ctx.repo.getThread(ctx.conversationId)
+  if (!thread) return NO_THREAD
+
+  const lower = arg.trim().toLowerCase()
+  if (lower === 'off' || RESET_WORDS.includes(lower)) {
+    ctx.repo.setThreadPermissionMode(ctx.conversationId, null)
+    return 'Yolo mode off. Back to `auto` for this thread — the classifier decides, risky calls become buttons.'
+  }
+
+  ctx.repo.setThreadPermissionMode(ctx.conversationId, 'bypassPermissions')
+  return (
+    '⚠️ Yolo mode **on** for this thread, starting with the next message: every tool call ' +
+    'runs unprompted, nothing asks and nothing blocks. `/yolo off` or `/permissions <mode>` to leave it.'
+  )
 }
 
 function threads(ctx: CommandContext): string {

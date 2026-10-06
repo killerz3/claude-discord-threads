@@ -60,6 +60,11 @@ export const SLASH_COMMANDS: CommandSpec[] = [
     description: 'Show or set the permission mode for this thread',
     option: { name: 'mode', description: 'auto, default, acceptEdits, plan or dontAsk' },
   },
+  {
+    name: 'yolo',
+    description: 'Bypass tool prompts entirely for this thread — no buttons, no asking',
+    option: { name: 'state', description: '"off" to go back to auto, blank to turn it on' },
+  },
   { name: 'threads', description: 'List every open thread' },
   { name: 'compact', description: 'Summarise this conversation to free up context (costs tokens)' },
 ]
@@ -165,7 +170,23 @@ async function handle(
   // Some commands spawn a CLI to answer, which can outrun Discord's 3-second
   // reply deadline, so acknowledge first and edit the answer in.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
-  const outcome = await handleCommand(text, deps.contextFor(conversationId))
+  const ctx = deps.contextFor(conversationId)
+  const outcome = await handleCommand(text, ctx)
+
+  // `/model <name> <message>` typed into the picker's single text field: same
+  // split as the plain-text path, but there is no Message to fall through to,
+  // so the override and the turn are applied here instead.
+  if (outcome.handled && 'forward' in outcome) {
+    ctx.repo.setThreadModel(conversationId, outcome.forward.model)
+    const queued = await deps.enqueueTurn(conversationId, outcome.forward.content, interaction.user.id)
+    await interaction.editReply(
+      queued
+        ? `Model set to \`${outcome.forward.model}\`. Sending your message — the result will appear in this thread.`
+        : 'Model set, but this channel has no open thread yet — send the message normally to start one.',
+    )
+    return
+  }
+
   const reply = outcome.handled ? outcome.reply : `Unknown command \`${text}\`.`
   // Discord caps a message at 2000 characters; these answers are short, but
   // /threads on a busy server could approach it.

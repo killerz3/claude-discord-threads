@@ -14,8 +14,13 @@ import { log, describeError } from '../log'
 /** Discord's own per-message limit; also a bound on work per turn. */
 const MAX_ATTACHMENTS = 10
 
-export async function composeTurnContent(msg: Message): Promise<string> {
-  const text = msg.content.trim()
+/**
+ * @param overrideText Used by `/model <name> <message>`: the prompt is the
+ * text after the model name, not the raw message content, but attachments on
+ * that same message still belong to the turn.
+ */
+export async function composeTurnContent(msg: Message, overrideText?: string): Promise<string> {
+  const text = (overrideText ?? msg.content).trim()
   if (msg.attachments.size === 0) return text
 
   const attachments = [...msg.attachments.values()].slice(0, MAX_ATTACHMENTS)
