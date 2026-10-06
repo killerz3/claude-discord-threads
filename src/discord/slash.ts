@@ -63,7 +63,10 @@ export const SLASH_COMMANDS: CommandSpec[] = [
   {
     name: 'yolo',
     description: 'Bypass tool prompts entirely for this thread — no buttons, no asking',
-    option: { name: 'state', description: '"off" to go back to auto, blank to turn it on' },
+    option: {
+      name: 'state',
+      description: '"off" to go back to auto, blank to turn it on, or a message to start in yolo mode',
+    },
   },
   { name: 'threads', description: 'List every open thread' },
   { name: 'compact', description: 'Summarise this conversation to free up context (costs tokens)' },
@@ -173,16 +176,20 @@ async function handle(
   const ctx = deps.contextFor(conversationId)
   const outcome = await handleCommand(text, ctx)
 
-  // `/model <name> <message>` typed into the picker's single text field: same
-  // split as the plain-text path, but there is no Message to fall through to,
-  // so the override and the turn are applied here instead.
+  // `/model <name> <message>` and `/yolo <message>` typed into the picker's
+  // single text field: same split as the plain-text path, but there is no
+  // Message to fall through to, so the override and the turn are applied
+  // here instead.
   if (outcome.handled && 'forward' in outcome) {
-    ctx.repo.setThreadModel(conversationId, outcome.forward.model)
-    const queued = await deps.enqueueTurn(conversationId, outcome.forward.content, interaction.user.id)
+    const { model, permissionMode, content } = outcome.forward
+    if (model !== undefined) ctx.repo.setThreadModel(conversationId, model)
+    if (permissionMode !== undefined) ctx.repo.setThreadPermissionMode(conversationId, permissionMode)
+    const queued = await deps.enqueueTurn(conversationId, content, interaction.user.id)
+    const what = model !== undefined ? `Model set to \`${model}\`` : 'Yolo mode set'
     await interaction.editReply(
       queued
-        ? `Model set to \`${outcome.forward.model}\`. Sending your message — the result will appear in this thread.`
-        : 'Model set, but this channel has no open thread yet — send the message normally to start one.',
+        ? `${what}. Sending your message — the result will appear in this thread.`
+        : `${what}, but this channel has no open thread yet — send the message normally to start one.`,
     )
     return
   }

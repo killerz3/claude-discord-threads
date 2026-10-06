@@ -285,6 +285,25 @@ describe('/yolo', () => {
     expect(replyOf(out)).toContain('off')
     expect(repo.getThread('thread-1')!.permission_mode).toBeNull()
   })
+
+  test('/yolo <message> forwards the message with bypassPermissions, not NO_THREAD', async () => {
+    const { ctx } = setup()
+    const out = await handleCommand('/yolo build me a website', ctx)
+    if (!out.handled || !('forward' in out)) throw new Error(`expected a forward, got: ${JSON.stringify(out)}`)
+    expect(out.forward.content).toBe('build me a website')
+    expect(out.forward.permissionMode).toBe('bypassPermissions')
+    expect(out.forward.model).toBeUndefined()
+  })
+
+  test('/yolo <message> works with no thread yet, unlike a bare /yolo', async () => {
+    const { ctx } = setup()
+    const noThread = { ...ctx, conversationId: 'chan-never-seen' }
+    const bare = await handleCommand('/yolo', noThread)
+    expect(replyOf(bare)).toContain('no conversation here yet')
+
+    const withMessage = await handleCommand('/yolo build me a website', noThread)
+    expect(withMessage.handled && 'forward' in withMessage).toBe(true)
+  })
 })
 
 describe('/cost', () => {

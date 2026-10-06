@@ -33,10 +33,11 @@ import { log, describeError } from '../log'
 export type CommandOutcome =
   | { handled: false }
   | { handled: true; reply: string }
-  // `/model <name> <message>` resolves the name, then hands the rest straight
-  // to the daemon to send as the actual turn — there is no reply because the
-  // model's answer is the reply.
-  | { handled: true; forward: { content: string; model: string } }
+  // `/model <name> <message>` and `/yolo <message>` resolve to an override
+  // plus the rest of the line, then hand it straight to the daemon to send as
+  // the actual turn — there is no reply because the model's answer is the
+  // reply. Each only ever sets the field it owns.
+  | { handled: true; forward: { content: string; model?: string; permissionMode?: string } }
 
 export type CommandContext = {
   client: Client
@@ -67,6 +68,8 @@ const HELP = [
   '_(outside a thread, `/model` is `/model global` — there is no thread to set)_',
   '`/permissions [mode]` — show or set the permission mode',
   '`/yolo [on|off]` — bypass tool prompts entirely for this thread _(no buttons, no asking)_',
+  '`/yolo <message>` — turn yolo on and send `<message>` in the same step, e.g. starting a' +
+    ' thread already in yolo mode',
   '`/compact` — summarise this conversation to free up context _(costs tokens)_',
   '',
   '**Elsewhere**',
@@ -108,7 +111,7 @@ export async function handleCommand(raw: string, ctx: CommandContext): Promise<C
     case 'permission':
       return reply(permissions(ctx, arg))
     case 'yolo':
-      return reply(yolo(ctx, arg))
+      return yoloCommand(ctx, arg)
     case 'threads':
       return reply(threads(ctx))
     // /compact is deliberately absent from this switch. Claude Code's own CLI
@@ -454,22 +457,37 @@ function permissions(ctx: CommandContext, arg: string): string {
  * `/yolo` — bypassPermissions for this thread: every tool call runs
  * unprompted, no buttons, no classifier. Kept out of `/permissions`'s own
  * list (see above) and given a name that reads as a warning.
+ *
+ * `/yolo <message>` is the one-line form: there is no thread to flip yet (a
+ * bare `/yolo` with nothing to start would just be NO_THREAD), so instead of
+ * toggling it forwards the message with bypassPermissions attached, the same
+ * way `/model <name> <message>` forwards a model override. Anything that
+ * resolves to "off" or a bare on/off still needs an existing thread to act on.
  */
-function yolo(ctx: CommandContext, arg: string): string {
-  const thread = ctx.repo.getThread(ctx.conversationId)
-  if (!thread) return NO_THREAD
+function yoloCommand(ctx: CommandContext, arg: string): CommandOutcome {
+  const raw = arg.trim()
+  const lower = raw.toLowerCase()
 
-  const lower = arg.trim().toLowerCase()
   if (lower === 'off' || RESET_WORDS.includes(lower)) {
+    const thread = ctx.repo.getThread(ctx.conversationId)
+    if (!thread) return reply(NO_THREAD)
     ctx.repo.setThreadPermissionMode(ctx.conversationId, null)
-    return 'Yolo mode off. Back to `auto` for this thread — the classifier decides, risky calls become buttons.'
+    return reply(
+      'Yolo mode off. Back to `auto` for this thread — the classifier decides, risky calls become buttons.',
+    )
   }
 
-  ctx.repo.setThreadPermissionMode(ctx.conversationId, 'bypassPermissions')
-  return (
-    '⚠️ Yolo mode **on** for this thread, starting with the next message: every tool call ' +
-    'runs unprompted, nothing asks and nothing blocks. `/yolo off` or `/permissions <mode>` to leave it.'
-  )
+  if (!raw || lower === 'on') {
+    const thread = ctx.repo.getThread(ctx.conversationId)
+    if (!thread) return reply(NO_THREAD)
+    ctx.repo.setThreadPermissionMode(ctx.conversationId, 'bypassPermissions')
+    return reply(
+      '⚠️ Yolo mode **on** for this thread, starting with the next message: every tool call ' +
+      'runs unprompted, nothing asks and nothing blocks. `/yolo off` or `/permissions <mode>` to leave it.',
+    )
+  }
+
+  return { handled: true, forward: { content: raw, permissionMode: 'bypassPermissions' } }
 }
 
 function threads(ctx: CommandContext): string {
