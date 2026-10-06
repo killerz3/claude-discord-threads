@@ -175,11 +175,14 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
           if (outcome.result.kind === 'error' && interimPosted && !ctx.abort?.signal.aborted) {
             return { kind: 'reply', text: 'Background work finished.', sessionId }
           }
-          // Only a reply carries a session id; retry/error results have no
-          // room for one, and the id is already persisted by then anyway.
-          return outcome.result.kind === 'reply'
-            ? { ...outcome.result, sessionId: sessionId ?? outcome.result.sessionId }
-            : outcome.result
+          // A retry goes back on the queue under the same (already-persisted)
+          // session id, so it needs nothing extra. A reply or an error both
+          // carry whatever session id the stream produced, so the thread can
+          // resume from it even when the turn itself failed.
+          if (outcome.result.kind === 'reply' || outcome.result.kind === 'error') {
+            return { ...outcome.result, sessionId: sessionId ?? outcome.result.sessionId }
+          }
+          return outcome.result
         }
       }
     } catch (err) {
@@ -187,16 +190,20 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
       if (retry !== null) {
         return { kind: 'retry', afterMs: retry, reason: 'rate limited' }
       }
-      // An abort is /stop, not a crash: say so plainly.
-      if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.' }
-      return { kind: 'error', message: describe(err) }
+      // An abort is /stop, not a crash: say so plainly. Either way, keep the
+      // session id captured above so the thread can resume instead of
+      // starting over on the next message.
+      if (ctx.abort?.signal.aborted) return { kind: 'error', message: 'Stopped.', sessionId }
+      return { kind: 'error', message: describe(err), sessionId }
     } finally {
       ctx.onWaiting?.(null)
       clearTimeout(timer)
       input.close()
       // The CLI may batch queued messages into one answer, so a follow-up can
       // outlive the stream with its reply already posted under another.
-      settleFollowUps(ctx.abort?.signal.aborted ? { kind: 'error', message: 'Stopped.' } : { kind: 'handled' })
+      settleFollowUps(
+        ctx.abort?.signal.aborted ? { kind: 'error', message: 'Stopped.', sessionId } : { kind: 'handled' },
+      )
     }
 
     if (timedOut) {

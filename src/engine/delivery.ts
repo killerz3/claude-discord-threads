@@ -64,7 +64,7 @@ export type ResponderResult =
     }
   /** Transient — the turn goes back on the queue rather than failing. */
   | { kind: 'retry'; afterMs: number; reason: string }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string; sessionId?: string }
   /** Already answered on Discord by an interim post; nothing more to send. */
   | { kind: 'handled' }
 
@@ -182,6 +182,10 @@ export class Delivery {
       }
 
       if (result.kind === 'error') {
+        // Stopped or crashed mid-stream, the session the SDK had already
+        // opened still exists — save it so the thread's next message resumes
+        // it instead of starting from zero.
+        if (result.sessionId) repo.setThreadSession(ctx.conversationId, result.sessionId)
         if (this.shuttingDown) return this.deferForRestart(ctx, result.message)
         repo.failTurn(ctx.turn.id, result.message)
         await this.post(ctx, `❌ ${result.message}`)
