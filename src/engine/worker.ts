@@ -14,8 +14,14 @@
  * SDK signatures are pinned in docs/sdk-notes.md against the shipped .d.ts.
  */
 
+import { readFileSync } from 'fs'
 import { query, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Responder, ResponderResult, TurnContext } from './delivery'
+import type { InlineImage } from '../store/db'
+import { log, describeError } from '../log'
+
+/** What a streamed user turn's `message.content` may hold. */
+type UserContent = SDKUserMessage['message']['content']
 
 /** Retry ceiling when Discord gives us no better hint. */
 const DEFAULT_RETRY_MS = 60_000
@@ -107,7 +113,7 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
     // prompt closes stdin, and the CLI kills background agents when a
     // closed-input run releases its result — so the model would promise to
     // report back from agents that were already dead.
-    const input = openInput(ctx.turn.content)
+    const input = openInput(buildInitialContent(ctx.turn.content, ctx.turn.image_paths))
     const timer = setTimeout(() => {
       timedOut = true
       input.close()
@@ -225,15 +231,51 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
 }
 
 /**
+ * Turn a turn's stored content into what the SDK's first message carries.
+ *
+ * Plain text stays a plain string. A turn with inline images (small, common
+ * image attachments — see `discord/inbound.ts`) becomes a text block plus one
+ * image block per attachment, read fresh off disk and base64-encoded — the
+ * same shape Claude Code's own CLI sends for a pasted image. That guarantees
+ * the model actually sees the picture in this turn's context, rather than a
+ * file path it may or may not bother to Read.
+ */
+export function buildInitialContent(content: string, imagePathsJson: string | null): UserContent {
+  if (!imagePathsJson) return content
+
+  let images: InlineImage[]
+  try {
+    images = JSON.parse(imagePathsJson)
+  } catch (err) {
+    log.warn('could not parse stored image_paths, falling back to text only', {
+      error: describeError(err),
+    })
+    return content
+  }
+  if (images.length === 0) return content
+
+  const blocks: Extract<UserContent, unknown[]> = [{ type: 'text', text: content }]
+  for (const img of images) {
+    try {
+      const data = readFileSync(img.path).toString('base64')
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data } })
+    } catch (err) {
+      log.warn('could not read inline image, skipping it', { path: img.path, error: describeError(err) })
+    }
+  }
+  return blocks
+}
+
+/**
  * A one-message prompt stream that stays open until `close()`. Closing ends
  * stdin, which lets the CLI exit once its current work settles.
  */
-export function openInput(content: string): {
+export function openInput(content: UserContent): {
   stream: AsyncIterable<SDKUserMessage>
   push: (content: string) => void
   close: () => void
 } {
-  const queue: string[] = [content]
+  const queue: UserContent[] = [content]
   let closed = false
   let wake: (() => void) | undefined
   const poke = () => {

@@ -20,11 +20,13 @@ function msgWith(content: string, attachments: Partial<Attachment>[] = []): Mess
 
 describe('plain messages', () => {
   test('pass through untouched apart from trimming', async () => {
-    expect(await composeTurnContent(msgWith('  fix the auth bug  '))).toBe('fix the auth bug')
+    const out = await composeTurnContent(msgWith('  fix the auth bug  '))
+    expect(out.text).toBe('fix the auth bug')
+    expect(out.images).toEqual([])
   })
 
   test('an empty message stays empty rather than gaining scaffolding', async () => {
-    expect(await composeTurnContent(msgWith(''))).toBe('')
+    expect((await composeTurnContent(msgWith(''))).text).toBe('')
   })
 })
 
@@ -37,9 +39,10 @@ describe('attachments', () => {
         { id: '1', name: 'trace.log', size: 10, url: 'http://127.0.0.1:1/x', contentType: 'text/plain' },
       ]),
     )
-    expect(out).toContain('look at this')
-    expect(out).toContain('trace.log')
-    expect(out).toContain('could not be downloaded')
+    expect(out.text).toContain('look at this')
+    expect(out.text).toContain('trace.log')
+    expect(out.text).toContain('could not be downloaded')
+    expect(out.images).toEqual([])
   })
 
   test('a message with only an attachment still says something', async () => {
@@ -47,7 +50,7 @@ describe('attachments', () => {
       msgWith('', [{ id: '1', name: 'a.png', size: 10, url: 'http://127.0.0.1:1/x' }]),
     )
     // "(no message text)" beats an empty prompt, which reads as a bug.
-    expect(out).toContain('(no message text)')
+    expect(out.text).toContain('(no message text)')
   })
 
   test('filenames cannot forge extra lines in the attachment list', async () => {
@@ -64,7 +67,7 @@ describe('attachments', () => {
       msgWith('hi', [{ ...hostile, size: 10, url: 'http://127.0.0.1:1/x' }]),
     )
     // One bullet per real attachment, no matter what the name claims.
-    expect(out.split('\n').filter(l => l.startsWith('- '))).toHaveLength(1)
+    expect(out.text.split('\n').filter(l => l.startsWith('- '))).toHaveLength(1)
   })
 
   test('more than ten attachments are capped and the remainder noted', async () => {
@@ -75,6 +78,6 @@ describe('attachments', () => {
       url: 'http://127.0.0.1:1/x',
     }))
     const out = await composeTurnContent(msgWith('batch', many))
-    expect(out).toContain('2 more not downloaded')
+    expect(out.text).toContain('2 more not downloaded')
   })
 })

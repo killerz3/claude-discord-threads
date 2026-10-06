@@ -188,14 +188,24 @@ export class Repo {
     inboundMessageId: string
     authorId: string
     content: string
+    /** JSON-encoded InlineImage[]; see composeTurnContent. */
+    imagePaths?: string | null
   }): TurnRow | null {
     const now = Date.now()
     const changed = this.db.run(
       `INSERT INTO turns
-         (thread_id, inbound_message_id, author_id, content, state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'queued', ?, ?)
+         (thread_id, inbound_message_id, author_id, content, image_paths, state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
        ON CONFLICT(inbound_message_id) DO NOTHING`,
-      [input.threadId, input.inboundMessageId, input.authorId, input.content, now, now],
+      [
+        input.threadId,
+        input.inboundMessageId,
+        input.authorId,
+        input.content,
+        input.imagePaths ?? null,
+        now,
+        now,
+      ],
     )
     if (changed.changes === 0) return null
     return this.getTurnByMessage(input.inboundMessageId)

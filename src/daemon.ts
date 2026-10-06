@@ -217,13 +217,14 @@ async function handleInbound(msg: Message): Promise<void> {
   // Attachments are downloaded here rather than exposed as a tool: workers get
   // no Discord tools at all, so this is the only path by which an image or a
   // log file reaches the model.
-  const content = await composeTurnContent(msg, forward?.content)
+  const { text: content, images } = await composeTurnContent(msg, forward?.content)
 
   const turn = repo.enqueueTurn({
     threadId: convo.id,
     inboundMessageId: msg.id,
     authorId: msg.author.id,
     content,
+    imagePaths: images.length ? JSON.stringify(images) : null,
   })
   repo.setWatermark(convo.channelId, msg.id)
   // Already held: a gateway redelivery or a backlog replay raced us.

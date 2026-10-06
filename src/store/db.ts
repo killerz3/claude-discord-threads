@@ -48,12 +48,20 @@ export type ThreadRow = {
   last_active_at: number
 }
 
+/** An image attachment small and common enough to hand to the model inline, as bytes. */
+export type InlineImage = {
+  path: string
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+}
+
 export type TurnRow = {
   id: number
   thread_id: string
   inbound_message_id: string
   author_id: string
   content: string
+  /** JSON-encoded InlineImage[], or null when the turn has no inline images. */
+  image_paths: string | null
   state: TurnState
   status_message_id: string | null
   /** JSON array of Discord message ids, set once the reply is confirmed. */
@@ -94,6 +102,7 @@ CREATE TABLE IF NOT EXISTS turns (
   inbound_message_id TEXT NOT NULL UNIQUE,
   author_id          TEXT NOT NULL,
   content            TEXT NOT NULL,
+  image_paths        TEXT,
   state              TEXT NOT NULL,
   status_message_id  TEXT,
   reply_message_ids  TEXT,
@@ -163,6 +172,7 @@ function migrate(db: Database): void {
     ['turns', 'input_tokens', 'INTEGER'],
     ['turns', 'output_tokens', 'INTEGER'],
     ['turns', 'duration_ms', 'INTEGER'],
+    ['turns', 'image_paths', 'TEXT'],
   ]
   for (const [table, column, type] of additions) {
     if (!columns(table).has(column)) db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
