@@ -29,6 +29,7 @@ import { PermissionBroker } from './discord/permissions'
 import { handleCommand } from './discord/commands'
 import { attachSlashHandler, registerGuildCommands } from './discord/slash'
 import { composeTurnContent } from './discord/inbound'
+import { threadName } from './discord/util'
 import { log, describeError } from './log'
 import { StatusLine } from './discord/status'
 import { Delivery, type Responder, type TurnContext } from './engine/delivery'
@@ -335,6 +336,67 @@ async function enqueueSyntheticTurn(
   return true
 }
 
+/**
+ * Open a conversation for a slash command run in a top-level channel, where
+ * there is no Message to thread on. The bot posts the prompt itself and opens
+ * the thread on that post, so the conversation looks the same as one started
+ * by typing — and the thread row is born with the command's override.
+ */
+async function startSlashConversation(
+  channelId: string,
+  content: string,
+  userId: string,
+  override: { model?: string; permissionMode?: string },
+): Promise<string | null> {
+  try {
+    const ch = await fetchSendable(client, channelId)
+    const isDM = ch.type === ChannelType.DM
+    let conversationId = channelId
+    let rootId: string | null = null
+    if (!isDM) {
+      if (ch.isThread()) return null // a thread we have no row for; not ours to adopt
+      const root = await ch.send({
+        content: `<@${userId}>: ${content}`.slice(0, 2000),
+        allowedMentions: { parse: [] },
+      })
+      noteSent(root.id)
+      const thread = await root.startThread({ name: threadName(content), autoArchiveDuration: 1440 })
+      noteSent(thread.id)
+      conversationId = thread.id
+      rootId = root.id
+    }
+    repo.createThread({
+      thread_id: conversationId,
+      channel_id: channelId,
+      root_message_id: rootId,
+      guild_id: isDM ? null : ('guildId' in ch ? ch.guildId : null),
+      cc_session_id: null,
+      cwd: DEFAULT_CWD,
+      title: null,
+      state: 'open',
+      model: override.model ?? repo.defaultModel(),
+      permission_mode: override.permissionMode ?? null,
+      header_message_id: null,
+    })
+    if (!isDM) {
+      try {
+        await syncModelHeader(client, repo, conversationId, { create: true })
+      } catch (err) {
+        log.debug('could not post model header', { thread: conversationId, error: describeError(err) })
+      }
+    }
+    if (!(await enqueueSyntheticTurn(conversationId, content, userId))) return null
+    void titleThread(conversationId, content)
+    return conversationId
+  } catch (err) {
+    log.warn('could not start conversation from slash command', {
+      channel: channelId,
+      error: describeError(err),
+    })
+    return null
+  }
+}
+
 async function sendTyping(channelId: string): Promise<void> {
   const ch = await client.channels.fetch(channelId)
   if (ch && 'sendTyping' in ch) await ch.sendTyping()
@@ -447,6 +509,7 @@ client.once('clientReady', async c => {
       interrupt: id => delivery.interrupt(id),
     }),
     enqueueTurn: enqueueSyntheticTurn,
+    startConversation: startSlashConversation,
   })
   await registerGuildCommands(client, await guildIdsForOptedInChannels())
   const sweep = setInterval(() => void sweepIdleThreads(), ARCHIVE_SWEEP_MS)

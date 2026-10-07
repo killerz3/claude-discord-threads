@@ -126,6 +126,18 @@ export type SlashDeps = {
   contextFor: (conversationId: string) => CommandContext
   /** Run a command that has to reach the model, e.g. /compact. */
   enqueueTurn: (conversationId: string, content: string, userId: string) => Promise<boolean>
+  /**
+   * Open a new conversation for a slash command run where there is none yet
+   * (a top-level channel), born with the given overrides, and queue `content`
+   * as its first turn. Resolves to the new conversation id, or null if one
+   * could not be opened.
+   */
+  startConversation: (
+    channelId: string,
+    content: string,
+    userId: string,
+    override: { model?: string; permissionMode?: string },
+  ) => Promise<string | null>
 }
 
 export function attachSlashHandler(client: Client, deps: SlashDeps): void {
@@ -182,14 +194,29 @@ async function handle(
   // here instead.
   if (outcome.handled && 'forward' in outcome) {
     const { model, permissionMode, content } = outcome.forward
+    const what = model !== undefined ? `Model set to \`${model}\`` : 'Yolo mode on'
+    // Run in a top-level channel there is no thread to apply the override to
+    // and no Message to open one on, so the daemon opens one itself — born
+    // with the override, which is the whole point of the one-line form.
+    if (!ctx.repo.getThread(conversationId)) {
+      const started = await deps.startConversation(conversationId, content, interaction.user.id, {
+        model,
+        permissionMode,
+      })
+      await interaction.editReply(
+        started
+          ? `${what}. Started <#${started}> — the result will appear there.`
+          : `${what}, but a thread could not be opened here — try \`${text}\` as a plain message.`,
+      )
+      return
+    }
     if (model !== undefined) ctx.repo.setThreadModel(conversationId, model)
     if (permissionMode !== undefined) ctx.repo.setThreadPermissionMode(conversationId, permissionMode)
     const queued = await deps.enqueueTurn(conversationId, content, interaction.user.id)
-    const what = model !== undefined ? `Model set to \`${model}\`` : 'Yolo mode set'
     await interaction.editReply(
       queued
         ? `${what}. Sending your message — the result will appear in this thread.`
-        : `${what}, but this channel has no open thread yet — send the message normally to start one.`,
+        : `${what}, but the message could not be queued.`,
     )
     return
   }
