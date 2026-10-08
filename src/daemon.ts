@@ -22,12 +22,14 @@ import {
   fetchSendable,
   keepThreadsOpen,
   resolveConversation,
+  type Conversation,
   renameThread,
   syncModelHeader,
 } from './discord/threads'
 import { PermissionBroker } from './discord/permissions'
 import { handleCommand } from './discord/commands'
 import { attachSlashHandler, registerGuildCommands } from './discord/slash'
+import { attachAskHandler } from './discord/ask'
 import { composeTurnContent } from './discord/inbound'
 import { log, describeError } from './log'
 import { StatusLine } from './discord/status'
@@ -106,6 +108,52 @@ function parentChannelOf(msg: Message): string {
 /** DM channel id → user id, for the outbound allowlist check on DMs. */
 const dmChannelUsers = new Map<string, string>()
 
+/** The ledger row for a conversation, created on first use. */
+function ensureThread(convo: Conversation, rootMessageId: string) {
+  const existing = repo.getThread(convo.id)
+  // Posting after `/done` reopens the conversation, so it stays open again.
+  if (existing?.state === 'archived') repo.reopenThread(convo.id)
+  return (
+    existing ??
+    repo.createThread({
+      thread_id: convo.id,
+      channel_id: convo.channelId,
+      root_message_id: convo.created ? rootMessageId : null,
+      guild_id: convo.guildId,
+      cc_session_id: null,
+      cwd: DEFAULT_CWD,
+      title: null,
+      state: 'open',
+      // A new thread inherits the global default set by `/model global`. It is
+      // copied, not referenced, so changing the default later cannot move a
+      // conversation already under way onto a different model.
+      model: repo.defaultModel(),
+      permission_mode: null,
+      header_message_id: null,
+    })
+  )
+}
+
+/**
+ * The Tell Claude button: feedback on a bot-posted message becomes a turn in
+ * the thread on that message (opened if it has none yet).
+ */
+async function startTurnOnMessage(
+  source: Message,
+  note: string,
+  content: string,
+  userId: string,
+): Promise<void> {
+  // A thread opened on a message takes that message's id.
+  const convo: Conversation = source.hasThread
+    ? { id: source.id, channelId: source.channelId, guildId: source.guildId, isDM: false, created: false }
+    : await resolveConversation(source, repo)
+  ensureThread(convo, source.id)
+  const ch = await fetchSendable(client, convo.id)
+  noteSent((await ch.send(`📝 ${note}`.slice(0, 1900))).id)
+  await enqueueSyntheticTurn(convo.id, content, userId)
+}
+
 async function handleInbound(msg: Message): Promise<void> {
   const result = await gate(client, msg)
   if (result.action === 'drop') return
@@ -161,26 +209,7 @@ async function handleInbound(msg: Message): Promise<void> {
 
   const convo = await resolveConversation(msg, repo)
   const existing = repo.getThread(convo.id)
-  // Posting after `/done` reopens the conversation, so it stays open again.
-  if (existing?.state === 'archived') repo.reopenThread(convo.id)
-  const thread =
-    existing ??
-    repo.createThread({
-      thread_id: convo.id,
-      channel_id: convo.channelId,
-      root_message_id: convo.created ? msg.id : null,
-      guild_id: convo.guildId,
-      cc_session_id: null,
-      cwd: DEFAULT_CWD,
-      title: null,
-      state: 'open',
-      // A new thread inherits the global default set by `/model global`. It is
-      // copied, not referenced, so changing the default later cannot move a
-      // conversation already under way onto a different model.
-      model: repo.defaultModel(),
-      permission_mode: null,
-      header_message_id: null,
-    })
+  const thread = ensureThread(convo, msg.id)
 
   // Say which model is answering, as the thread's first message. Awaited so it
   // lands above the reply rather than racing it.
@@ -389,6 +418,10 @@ client.once('clientReady', async c => {
       interrupt: id => delivery.interrupt(id),
     }),
     enqueueTurn: enqueueSyntheticTurn,
+  })
+  attachAskHandler(client, {
+    isAllowedUser: userId => loadAccess().allowFrom.includes(userId),
+    startTurn: startTurnOnMessage,
   })
   await registerGuildCommands(client, await guildIdsForOptedInChannels())
   void keepThreadsOpen(client, repo)
