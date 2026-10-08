@@ -324,15 +324,26 @@ async function enqueueSyntheticTurn(
   })
   if (!turn) return false
 
-  void delivery.submit({
-    turn,
-    conversationId,
-    message: null,
-    sessionId: thread.cc_session_id,
-    cwd: thread.cwd,
-    model: thread.model,
-    permissionMode: thread.permission_mode,
-  })
+  // Same visible progress as a typed message: without the typing indicator
+  // and status line a slash-started thread sits silent until the reply lands,
+  // which reads as a turn that never started.
+  signals.startTyping(conversationId, () => sendTyping(conversationId))
+  const status = new StatusLine(client, conversationId)
+  void delivery
+    .submit({
+      turn,
+      conversationId,
+      message: null,
+      sessionId: thread.cc_session_id,
+      cwd: thread.cwd,
+      model: thread.model,
+      permissionMode: thread.permission_mode,
+      onToolUse: tool => status.note(tool),
+    })
+    .finally(async () => {
+      signals.stopTyping(conversationId)
+      await status.close()
+    })
   return true
 }
 
