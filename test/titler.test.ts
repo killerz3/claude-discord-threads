@@ -62,8 +62,8 @@ function setup(opts: { name?: string; title?: string | null; doneTurns?: number 
 
 describe('parseTitle', () => {
   test('strips quotes and trailing punctuation', () => {
-    expect(parseTitle('"RaR Boost Ads."')).toBe('RaR Boost Ads')
-    expect(parseTitle('  “just1.page uk/ie”  ')).toBe('just1.page uk/ie')
+    expect(parseTitle('"TRPhoto Boost Ads."')).toBe('TRPhoto Boost Ads')
+    expect(parseTitle('  “just1.page ie”  ')).toBe('just1.page ie')
   })
 
   test('rejects empty and over-long answers', () => {
@@ -71,6 +71,10 @@ describe('parseTitle', () => {
     expect(parseTitle('""')).toBeNull()
     expect(parseTitle('one two three four five six seven eight')).toBeNull()
     expect(parseTitle('x'.repeat(61))).toBeNull()
+  })
+
+  test('rejects a style example echoed back', () => {
+    expect(parseTitle('royalties')).toBeNull()
   })
 })
 

@@ -42,7 +42,9 @@ const STYLE_EXAMPLES = [
 
 /**
  * Accept a model's answer only if it reads as a name. Anything else means no
- * rename — a bad name in the sidebar is worse than a long one.
+ * rename — a bad name in the sidebar is worse than a long one. A style example
+ * echoed back means the model had too little to go on (a thread about funnels
+ * got named "Royalties").
  */
 export function parseTitle(raw: string): string | null {
   const name = raw
@@ -50,6 +52,7 @@ export function parseTitle(raw: string): string | null {
     .replace(/^[\s"'`*#“”‘’]+|[\s"'`*“”‘’.,;:!?]+$/g, '')
   const words = name.split(' ').filter(Boolean).length
   if (words < 1 || words > 7 || name.length > 60) return null
+  if (STYLE_EXAMPLES.some(e => e.toLowerCase() === name.toLowerCase())) return null
   return name
 }
 
