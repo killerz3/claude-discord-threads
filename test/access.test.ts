@@ -13,7 +13,7 @@ import { mkdtempSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-const STATE = mkdtempSync(join(tmpdir(), 'access-test-'))
+const STATE = process.env.DISCORD_STATE_DIR ?? mkdtempSync(join(tmpdir(), 'access-test-'))
 process.env.DISCORD_STATE_DIR = STATE
 
 const { gate } = await import('../src/discord/access')
@@ -26,6 +26,7 @@ const FRIEND = '333333333333333333'
 const CHANNEL = '999999999999999999'
 
 function writeAccess(a: Record<string, unknown>): void {
+  if (ACCESS_FILE !== join(STATE, 'access.json')) throw new Error('Refusing to write outside test state')
   writeFileSync(ACCESS_FILE, JSON.stringify(a, null, 2))
 }
 

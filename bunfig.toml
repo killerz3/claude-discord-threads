@@ -1,0 +1,3 @@
+[test]
+# Point every test at a throwaway state dir before any module reads config.
+preload = ["./test/setup.ts"]
