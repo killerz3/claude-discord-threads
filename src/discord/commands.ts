@@ -71,6 +71,7 @@ const HELP = [
   '`/yolo <message>` — turn yolo on and send `<message>` in the same step, e.g. starting a' +
     ' thread already in yolo mode',
   '`/compact` — summarise this conversation to free up context _(costs tokens)_',
+  '`/recap` — where this thread stands and what comes next _(costs tokens)_',
   '',
   '**Elsewhere**',
   '`/threads` — every open thread',
