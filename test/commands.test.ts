@@ -15,7 +15,7 @@ import type { Client } from 'discord.js'
 import { openDb } from '../src/store/db'
 import { Repo } from '../src/store/repo'
 import { handleCommand } from '../src/discord/commands'
-import { describeCompaction, isNotificationEcho } from '../src/engine/worker'
+import { consume, describeCompaction, isNotificationEcho } from '../src/engine/worker'
 
 /** Every command under test here answers with a reply, never a forward. */
 function replyOf(out: Awaited<ReturnType<typeof handleCommand>>): string {
@@ -516,5 +516,25 @@ describe('notification echoes on resume', () => {
 
   test('a /compact result is left to the compaction path', () => {
     expect(isNotificationEcho(result(), true, true)).toBe(false)
+  })
+})
+
+describe('empty final result', () => {
+  const ctx = {} as Parameters<typeof consume>[1]
+  const success = { type: 'result', subtype: 'success', result: '', session_id: 's' } as unknown as Parameters<typeof consume>[0]
+
+  test('falls back to the last assistant text instead of "no reply"', () => {
+    const assistant = {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'Here is the answer.' }, { type: 'tool_use', name: 'Bash' }] },
+    } as unknown as Parameters<typeof consume>[0]
+    const { assistantText } = consume(assistant, ctx)
+    expect(assistantText).toBe('Here is the answer.')
+    const out = consume(success, ctx, assistantText)
+    expect(out.result).toMatchObject({ kind: 'reply', text: 'Here is the answer.' })
+  })
+
+  test('still errors when the model wrote nothing at all', () => {
+    expect(consume(success, ctx).result).toMatchObject({ kind: 'error' })
   })
 })
