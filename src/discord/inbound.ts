@@ -18,6 +18,7 @@
 import type { Message } from 'discord.js'
 import { downloadAttachment, safeAttName } from './util'
 import { log, describeError } from '../log'
+import { isAllowedSender, loadAccess } from './access'
 import type { InlineImage } from '../store/db'
 
 /** Discord's own per-message limit; also a bound on work per turn. */
@@ -44,7 +45,7 @@ export type TurnContent = {
  * that same message still belong to the turn.
  */
 export async function composeTurnContent(msg: Message, overrideText?: string): Promise<TurnContent> {
-  const text = (overrideText ?? msg.content).trim()
+  const text = (await quotedReply(msg)) + (overrideText ?? msg.content).trim()
   if (msg.attachments.size === 0) return { text, images: [] }
 
   const attachments = [...msg.attachments.values()].slice(0, MAX_ATTACHMENTS)
@@ -85,5 +86,25 @@ export async function composeTurnContent(msg: Message, overrideText?: string): P
       ...lines,
     ].join('\n'),
     images,
+  }
+}
+
+/**
+ * A Discord reply carries only a pointer to the message it quotes, so without
+ * this the model sees "yes, do that" with no idea what "that" is. Only the
+ * bot's own messages and allowlisted authors are quoted: anyone else's text
+ * would be a prompt-injection path into a worker the allowlist keeps them out of.
+ */
+async function quotedReply(msg: Message): Promise<string> {
+  if (!msg.reference?.messageId) return ''
+  try {
+    const ref = await msg.fetchReference()
+    const trusted = ref.author.id === msg.client.user?.id || isAllowedSender(loadAccess(), msg, ref.author.id)
+    if (!trusted) return `Replying to a message from ${ref.author.username} (not on the allowlist, text left out)\n\n`
+    const quoted = ref.content.trim() || '(no text)'
+    return `Replying to ${ref.author.username}:\n${quoted.replace(/^/gm, '> ')}\n\n`
+  } catch (err) {
+    log.warn('reply reference fetch failed', { error: describeError(err) })
+    return ''
   }
 }

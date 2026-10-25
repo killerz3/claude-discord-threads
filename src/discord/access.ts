@@ -165,12 +165,25 @@ export async function gate(client: Client, msg: Message): Promise<GateResult> {
   // reaching it is equivalent to a shell there, and a guild channel is a room
   // whose membership the operator does not control. If neither list names
   // anyone, nobody is allowed: an unconfigured bot serves no one.
-  const groupAllowFrom = policy.allowFrom?.length ? policy.allowFrom : access.allowFrom
-  if (!groupAllowFrom.includes(senderId)) return { action: 'drop' }
+  if (!isAllowedSender(access, msg, senderId)) return { action: 'drop' }
   if ((policy.requireMention ?? true) && !(await isMentioned(client, msg, access.mentionPatterns))) {
     return { action: 'drop' }
   }
   return { action: 'deliver', access }
+}
+
+/**
+ * Whether `userId` may put words in front of a worker from `msg`'s channel —
+ * the same rule `gate()` applies to the sender. Also used for text the sender
+ * pulls in, such as the message they reply to, so quoting a stranger is not a
+ * way around the allowlist.
+ */
+export function isAllowedSender(access: Access, msg: Message, userId: string): boolean {
+  if (msg.channel.type === ChannelType.DM) return access.allowFrom.includes(userId)
+  const policy = access.groups[gateChannelKey(msg)]
+  if (!policy) return false
+  const allowFrom = policy.allowFrom?.length ? policy.allowFrom : access.allowFrom
+  return allowFrom.includes(userId)
 }
 
 /**
