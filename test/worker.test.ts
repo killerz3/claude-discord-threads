@@ -13,7 +13,7 @@ import { test, expect, describe } from 'bun:test'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { buildInitialContent } from '../src/engine/worker'
+import { buildInitialContent, extractAttachments } from '../src/engine/worker'
 
 // A 1x1 transparent PNG — just needs to be valid bytes, never decoded here.
 const PNG_BYTES = Buffer.from(
@@ -58,5 +58,30 @@ describe('buildInitialContent', () => {
 
   test('an empty image list falls back to the plain text', () => {
     expect(buildInitialContent('hi', '[]')).toBe('hi')
+  })
+})
+
+describe('extractAttachments', () => {
+  const img = join(mkdtempSync(join(tmpdir(), 'attach-test-')), 'chart.png')
+  writeFileSync(img, 'x')
+
+  test('ATTACH lines become files and leave the text', () => {
+    const r = extractAttachments(`Here it is.\nATTACH: ${img}\nDone.`)
+    expect(r.files).toEqual([img])
+    expect(r.text).toBe('Here it is.\nDone.')
+  })
+
+  test('a missing file is reported, not fatal', () => {
+    const r = extractAttachments('Look:\nATTACH: /nope/missing.png')
+    expect(r.files).toEqual([])
+    expect(r.text).toContain('could not attach /nope/missing.png')
+  })
+
+  test('an attachment-only reply still has text', () => {
+    expect(extractAttachments(`ATTACH: ${img}`).text).toBe('chart.png')
+  })
+
+  test('a relative path is left as plain text', () => {
+    expect(extractAttachments('ATTACH: notes.md')).toEqual({ text: 'ATTACH: notes.md', files: [] })
   })
 })

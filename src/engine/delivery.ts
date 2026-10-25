@@ -41,7 +41,7 @@ export type TurnContext = {
    * Posts an interim answer while background agents keep the turn open.
    * Best effort and outside the ledger: a crash replays the turn in full.
    */
-  onInterim?: (text: string) => Promise<void>
+  onInterim?: (text: string, files?: string[]) => Promise<void>
   /**
    * Called once the turn has answered and is only waiting on background work,
    * with a way to send the next message into the same live session; called
@@ -157,8 +157,8 @@ export class Delivery {
             ...ctx,
             turn: fresh,
             abort,
-            onInterim: async text => {
-              await this.post(ctx, text)
+            onInterim: async (text, files) => {
+              await this.post(ctx, text, files)
             },
             onWaiting: push => {
               if (push) this.waiting.set(ctx.conversationId, push)

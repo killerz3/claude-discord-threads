@@ -19,6 +19,7 @@ import { query, type Options, type SDKMessage, type SDKUserMessage } from '@anth
 import type { Responder, ResponderResult, TurnContext } from './delivery'
 import type { InlineImage } from '../store/db'
 import { log, describeError } from '../log'
+import { assertAttachable } from '../discord/util'
 
 /** What a streamed user turn's `message.content` may hold. */
 type UserContent = SDKUserMessage['message']['content']
@@ -42,7 +43,31 @@ const SYSTEM_APPEND = [
   'about to do, and no sign-off.',
   'Keep answers tight. Use fenced code blocks for code, commands and file contents.',
   'Discord splits messages over 2000 characters, so prefer brevity over exhaustiveness.',
+  'To send a file or image, put a line `ATTACH: /absolute/path` in your reply (one per file, max 10, 25MB each);',
+  'the line is removed and the file is uploaded with the message.',
 ].join(' ')
+
+/**
+ * Pull `ATTACH: /path` lines out of a reply. Files Discord would refuse are
+ * reported in the text instead, so one bad path does not sink the reply.
+ */
+export function extractAttachments(text: string): { text: string; files: string[] } {
+  const files: string[] = []
+  const problems: string[] = []
+  const kept = text.split('\n').filter(line => {
+    const m = line.match(/^\s*ATTACH:\s*(\/\S.*?)\s*$/)
+    if (!m) return true
+    try {
+      assertAttachable([...files, m[1]!])
+      files.push(m[1]!)
+    } catch (err) {
+      problems.push(`(could not attach ${m[1]}: ${err instanceof Error ? err.message : err})`)
+    }
+    return false
+  })
+  const out = [...kept, ...problems].join('\n').trim()
+  return { text: out || files.map(f => f.slice(f.lastIndexOf('/') + 1)).join(', '), files }
+}
 
 /**
  * Match the operator's interactive sessions, which run with auto mode on.
@@ -163,7 +188,7 @@ export function makeClaudeResponder(workerOpts: WorkerOptions = {}): Responder {
           }
           if (liveTasks > 0 && outcome.result.kind !== 'retry') {
             if (outcome.result.kind === 'reply') {
-              await ctx.onInterim?.(outcome.result.text).catch(() => {})
+              await ctx.onInterim?.(outcome.result.text, outcome.result.files).catch(() => {})
               interimPosted = true
               // Only now is the turn idle and waiting: a new message in the
               // thread can join this session instead of queueing behind it.
@@ -405,10 +430,11 @@ export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): C
     // `result` is only the *last* assistant message. When the model writes its
     // answer and then ends on a tool call or a thinking-only message, it is
     // empty even though the answer exists; post the last text instead.
-    const text = message.result?.trim() || lastText
-    if (!text) {
+    const raw = message.result?.trim() || lastText
+    if (!raw) {
       return { sessionId, result: { kind: 'error', message: 'the model produced no reply' } }
     }
+    const { text, files } = extractAttachments(raw)
     return {
       sessionId,
       text,
@@ -416,6 +442,7 @@ export function consume(message: SDKMessage, ctx: TurnContext, lastText = ''): C
         kind: 'reply',
         text,
         sessionId,
+        ...(files.length > 0 ? { files } : {}),
         usage: {
           costUsd: message.total_cost_usd,
           inputTokens: message.usage?.input_tokens,
